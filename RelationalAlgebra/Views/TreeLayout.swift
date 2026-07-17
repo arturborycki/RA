@@ -7,6 +7,7 @@
 //  parent→child edges for drawing.
 //
 
+import Foundation
 import CoreGraphics
 
 struct PositionedNode: Identifiable {
