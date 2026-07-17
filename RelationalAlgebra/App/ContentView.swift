@@ -25,11 +25,25 @@ enum ResultTab: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @EnvironmentObject private var viewModel: AppViewModel
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @AppStorage("appTheme") private var appTheme: AppTheme = .system
     @State private var selectedTab: ResultTab = .steps
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var phoneTab: PhoneTab = .sql
 
     var body: some View {
+        Group {
+            if horizontalSizeClass == .compact {
+                compactLayout
+            } else {
+                splitLayout
+            }
+        }
+        .preferredColorScheme(appTheme.colorScheme)
+    }
+
+    // iPad / regular width: editor and results side by side.
+    private var splitLayout: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             EditorView()
                 .navigationTitle("SQL")
@@ -45,8 +59,35 @@ struct ContentView: View {
                 }
         }
         .navigationSplitViewStyle(.balanced)
-        .preferredColorScheme(appTheme.colorScheme)
     }
+
+    // iPhone / compact width: tabs, since a split view would hide the results.
+    private var compactLayout: some View {
+        TabView(selection: $phoneTab) {
+            NavigationStack {
+                EditorView()
+                    .navigationTitle("SQL")
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+            .tabItem { Label("SQL", systemImage: "curlybraces") }
+            .tag(PhoneTab.sql)
+
+            NavigationStack {
+                ResultsView(selectedTab: $selectedTab)
+                    .navigationTitle("Relational Algebra")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            ThemePicker(theme: $appTheme)
+                        }
+                    }
+            }
+            .tabItem { Label("Result", systemImage: "function") }
+            .tag(PhoneTab.result)
+        }
+    }
+
+    private enum PhoneTab: Hashable { case sql, result }
 }
 
 /// A menu that lets the user pick System / Light / Dark appearance.
