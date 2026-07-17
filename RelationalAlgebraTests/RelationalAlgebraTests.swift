@@ -137,6 +137,95 @@ final class RelationalAlgebraTests: XCTestCase {
         XCTAssertTrue(result.finalExpression.formula.contains(RASymbol.group))
     }
 
+    // MARK: - Advanced SQL (TPC-H / TPC-DS constructs)
+
+    func testParseCaseExpression() throws {
+        let query = try SQLParser.parse("""
+        SELECT
+            SUM(CASE WHEN l_returnflag = 'R' THEN l_extendedprice ELSE 0 END) AS refunds
+        FROM lineitem
+        """)
+        let result = RATranslator().translate(query)
+        XCTAssertTrue(result.finalExpression.formula.contains(RASymbol.group))
+    }
+
+    func testParseCast() throws {
+        let query = try SQLParser.parse(
+            "SELECT CAST(l_quantity AS decimal(15, 2)) AS q FROM lineitem")
+        guard case .select = query else { return XCTFail("expected select") }
+    }
+
+    func testParseDateAndInterval() throws {
+        let query = try SQLParser.parse(
+            "SELECT * FROM lineitem WHERE l_shipdate <= DATE '1998-12-01' - INTERVAL '90' DAY")
+        guard case let .select(stmt) = query else { return XCTFail("expected select") }
+        XCTAssertNotNil(stmt.whereClause)
+    }
+
+    func testParseWindowFunction() throws {
+        let query = try SQLParser.parse("""
+        SELECT ss_item_sk,
+               RANK() OVER (PARTITION BY ss_store_sk ORDER BY SUM(ss_net_profit) DESC) AS rnk
+        FROM store_sales
+        GROUP BY ss_item_sk, ss_store_sk
+        """)
+        let result = RATranslator().translate(query)
+        XCTAssertTrue(result.finalExpression.formula.contains("OVER"))
+    }
+
+    func testParseWithCTE() throws {
+        let query = try SQLParser.parse("""
+        WITH revenue AS (
+            SELECT l_suppkey AS supplier_no, SUM(l_extendedprice) AS total
+            FROM lineitem
+            GROUP BY l_suppkey
+        )
+        SELECT s_name, total
+        FROM supplier, revenue
+        WHERE s_suppkey = supplier_no
+        ORDER BY total DESC
+        """)
+        guard case let .with(ctes, _) = query else { return XCTFail("expected WITH") }
+        XCTAssertEqual(ctes.count, 1)
+        XCTAssertEqual(ctes[0].name, "revenue")
+        let result = RATranslator().translate(query)
+        XCTAssertFalse(result.steps.isEmpty)
+    }
+
+    func testParseGroupByRollup() throws {
+        let query = try SQLParser.parse(
+            "SELECT d_year, SUM(ss_net_profit) FROM store_sales GROUP BY ROLLUP(d_year)")
+        let result = RATranslator().translate(query)
+        XCTAssertTrue(result.finalExpression.formula.contains("ROLLUP"))
+    }
+
+    func testTpchQ1() throws {
+        // TPC-H Q1: aggregation with CASE-free arithmetic aggregates.
+        let query = try SQLParser.parse("""
+        select
+            l_returnflag, l_linestatus,
+            sum(l_quantity) as sum_qty,
+            sum(l_extendedprice * (1 - l_discount)) as sum_disc_price,
+            sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) as sum_charge,
+            avg(l_quantity) as avg_qty,
+            count(*) as count_order
+        from lineitem
+        where l_shipdate <= date '1998-12-01' - interval '90' day
+        group by l_returnflag, l_linestatus
+        order by l_returnflag, l_linestatus
+        """)
+        let result = RATranslator().translate(query)
+        XCTAssertTrue(result.finalExpression.formula.contains(RASymbol.group))
+        XCTAssertTrue(result.finalExpression.formula.contains(RASymbol.sort))
+    }
+
+    func testFetchFirst() throws {
+        let query = try SQLParser.parse(
+            "SELECT * FROM item ORDER BY i_item_sk FETCH FIRST 100 ROWS ONLY")
+        guard case let .select(stmt) = query else { return XCTFail("expected select") }
+        XCTAssertEqual(stmt.limit, 100)
+    }
+
     // MARK: - Translator
 
     func testTranslateProducesSelectionAndProjection() throws {

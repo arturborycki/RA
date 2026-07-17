@@ -23,7 +23,8 @@ enum SQLKeyword {
         "ORDER", "ASC", "DESC", "AS", "JOIN", "INNER", "LEFT", "RIGHT", "FULL",
         "OUTER", "CROSS", "ON", "USING", "AND", "OR", "NOT", "IN", "IS", "NULL",
         "BETWEEN", "LIKE", "UNION", "INTERSECT", "EXCEPT", "LIMIT", "TRUE",
-        "FALSE", "COUNT", "SUM", "AVG", "MIN", "MAX", "EXISTS", "FOR"
+        "FALSE", "COUNT", "SUM", "AVG", "MIN", "MAX", "EXISTS", "FOR",
+        "CASE", "WHEN", "THEN", "ELSE", "END", "WITH"
     ]
 }
 

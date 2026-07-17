@@ -35,7 +35,26 @@ struct RATranslator {
             return buildSelect(stmt, steps: &steps)
         case let .setOperation(op, left, right, all):
             return buildSetOperation(op, left: left, right: right, all: all, steps: &steps)
+        case let .with(ctes, body):
+            return buildWith(ctes, body: body, steps: &steps)
         }
+    }
+
+    /// Each CTE becomes its own labelled sub-derivation; the main body then
+    /// references the CTE names as base relations.
+    private func buildWith(_ ctes: [CommonTableExpression], body: SQLQuery,
+                           steps: inout [RAStep]) -> RANode {
+        for cte in ctes {
+            var cteSteps: [RAStep] = []
+            let expr = build(cte.query, steps: &cteSteps)
+            steps.append(contentsOf: cteSteps)
+            let named = RANode.rename(alias: cte.name, child: expr)
+            addStep(&steps, title: "Common table expression (\(RASymbol.rename))",
+                    clause: "WITH \(cte.name)",
+                    explanation: "Define the CTE '\(cte.name)'. It can be referenced as a relation below.",
+                    expression: named)
+        }
+        return build(body, steps: &steps)
     }
 
     private func buildSetOperation(_ op: SetOperator, left: SQLQuery, right: SQLQuery,
@@ -99,7 +118,11 @@ struct RATranslator {
 
         // 3. GROUP BY / aggregation
         let aggregates = collectAggregates(stmt)
-        let grouping = stmt.groupBy.map { $0.rendered }
+        let rawGrouping = stmt.groupBy.map { $0.rendered }
+        var grouping = rawGrouping
+        if let modifier = stmt.groupByModifier, !rawGrouping.isEmpty {
+            grouping = ["\(modifier)(\(rawGrouping.joined(separator: ", ")))"]
+        }
         let needsGrouping = !grouping.isEmpty || !aggregates.isEmpty
         if needsGrouping {
             current = .group(grouping: grouping, aggregates: aggregates, child: current)

@@ -59,6 +59,24 @@ final class SQLParser {
         return false
     }
 
+    /// Some SQL words are contextual (OVER, PARTITION, ROLLUP, FETCH, …). We
+    /// keep them as ordinary identifiers and match them by spelling where the
+    /// grammar expects them, so they remain usable as column names elsewhere.
+    private func checkIdentifierKeyword(_ word: String) -> Bool {
+        current.kind == .identifier && current.text.uppercased() == word
+    }
+
+    @discardableResult
+    private func matchIdentifierKeyword(_ word: String) -> Bool {
+        if checkIdentifierKeyword(word) { _ = advance(); return true }
+        return false
+    }
+
+    private func peekKind(_ offset: Int) -> TokenKind {
+        let i = index + offset
+        return i < tokens.count ? tokens[i].kind : .eof
+    }
+
     private func expectKeyword(_ word: String) throws {
         guard matchKeyword(word) else {
             throw ParseError(message: "Expected '\(word)' but found '\(currentDescription)'.",
@@ -92,6 +110,9 @@ final class SQLParser {
     // MARK: - Query (handles set operators)
 
     func parseQuery() throws -> SQLQuery {
+        if checkKeyword("WITH") {
+            return try parseWith()
+        }
         var left = try parseSelectAsQuery()
         while checkKeyword("UNION") || checkKeyword("INTERSECT") || checkKeyword("EXCEPT") {
             let opText = advance().text.uppercased()
@@ -101,6 +122,33 @@ final class SQLParser {
             left = .setOperation(op, left: left, right: right, all: all)
         }
         return left
+    }
+
+    /// `WITH [RECURSIVE] name [(cols)] AS ( query ) [, …] <body>`
+    private func parseWith() throws -> SQLQuery {
+        _ = advance() // WITH
+        _ = matchIdentifierKeyword("RECURSIVE")
+        var ctes: [CommonTableExpression] = []
+        repeat {
+            let name = try expect(kind: .identifier, "a CTE name").text
+            var columns: [String] = []
+            if check(kind: .leftParen) {
+                _ = advance()
+                columns.append(try expect(kind: .identifier, "a column name").text)
+                while consumeCommaIfPresent() {
+                    columns.append(try expect(kind: .identifier, "a column name").text)
+                }
+                _ = try expect(kind: .rightParen, "')'")
+            }
+            try expectKeyword("AS")
+            _ = try expect(kind: .leftParen, "'(' before the CTE query")
+            let query = try parseQuery()
+            _ = try expect(kind: .rightParen, "')'")
+            ctes.append(CommonTableExpression(name: name, columns: columns, query: query))
+        } while consumeCommaIfPresent()
+
+        let body = try parseQuery()
+        return .with(ctes: ctes, body: body)
     }
 
     private func parseSelectAsQuery() throws -> SQLQuery {
@@ -148,7 +196,9 @@ final class SQLParser {
 
         if matchKeyword("GROUP") {
             try expectKeyword("BY")
-            stmt.groupBy = try parseExpressionList()
+            let (cols, modifier) = try parseGroupByList()
+            stmt.groupBy = cols
+            stmt.groupByModifier = modifier
             if matchKeyword("HAVING") {
                 stmt.having = try parseExpression()
             }
@@ -162,9 +212,62 @@ final class SQLParser {
         if matchKeyword("LIMIT") {
             let tok = try expect(kind: .number, "a number after LIMIT")
             stmt.limit = Int(tok.text)
+            // Optional `LIMIT offset, count` or `OFFSET n` — consume leniently.
+            if consumeCommaIfPresent(), check(kind: .number) { stmt.limit = Int(advance().text) }
+        }
+        if matchIdentifierKeyword("OFFSET") {
+            if check(kind: .number) { _ = advance() }
+            _ = matchIdentifierKeyword("ROWS") || matchIdentifierKeyword("ROW")
+        }
+        // `FETCH FIRST n ROWS ONLY`
+        if matchIdentifierKeyword("FETCH") {
+            _ = matchIdentifierKeyword("FIRST") || matchIdentifierKeyword("NEXT")
+            if check(kind: .number) { stmt.limit = Int(advance().text) }
+            _ = matchIdentifierKeyword("ROWS") || matchIdentifierKeyword("ROW")
+            _ = matchIdentifierKeyword("ONLY")
         }
 
         return stmt
+    }
+
+    /// GROUP BY list, possibly `ROLLUP(...)`, `CUBE(...)`, or `GROUPING SETS(...)`.
+    private func parseGroupByList() throws -> ([Expression], String?) {
+        if matchIdentifierKeyword("ROLLUP") {
+            return (try parseParenExpressionList(), "ROLLUP")
+        }
+        if matchIdentifierKeyword("CUBE") {
+            return (try parseParenExpressionList(), "CUBE")
+        }
+        if checkIdentifierKeyword("GROUPING"), peekKind(1) == .identifier,
+           tokens[index + 1].text.uppercased() == "SETS" {
+            _ = advance() // GROUPING
+            _ = advance() // SETS
+            _ = try expect(kind: .leftParen, "'(' after GROUPING SETS")
+            var all: [Expression] = []
+            repeat {
+                if check(kind: .leftParen) {
+                    _ = advance()
+                    if !check(kind: .rightParen) {
+                        all.append(try parseExpression())
+                        while consumeCommaIfPresent() { all.append(try parseExpression()) }
+                    }
+                    _ = try expect(kind: .rightParen, "')'")
+                } else {
+                    all.append(try parseExpression())
+                }
+            } while consumeCommaIfPresent()
+            _ = try expect(kind: .rightParen, "')'")
+            return (all, "GROUPING SETS")
+        }
+        return (try parseExpressionList(), nil)
+    }
+
+    private func parseParenExpressionList() throws -> [Expression] {
+        _ = try expect(kind: .leftParen, "'('")
+        var list: [Expression] = [try parseExpression()]
+        while consumeCommaIfPresent() { list.append(try parseExpression()) }
+        _ = try expect(kind: .rightParen, "')'")
+        return list
     }
 
     private func parseSelectList() throws -> [SelectItem] {
@@ -282,6 +385,10 @@ final class SQLParser {
             var descending = false
             if matchKeyword("DESC") { descending = true }
             else { _ = matchKeyword("ASC") }
+            // Optional `NULLS FIRST` / `NULLS LAST` — accepted and ignored.
+            if matchIdentifierKeyword("NULLS") {
+                _ = matchIdentifierKeyword("FIRST") || matchIdentifierKeyword("LAST")
+            }
             items.append(OrderItem(expression: expr, descending: descending))
         } while consumeCommaIfPresent()
         return items
@@ -454,6 +561,7 @@ final class SQLParser {
             if upper == "TRUE" { _ = advance(); return .boolLiteral(true) }
             if upper == "FALSE" { _ = advance(); return .boolLiteral(false) }
             if upper == "NULL" { _ = advance(); return .nullLiteral }
+            if upper == "CASE" { return try parseCase() }
             if upper == "EXISTS" {
                 _ = advance()
                 _ = try expect(kind: .leftParen, "'(' after EXISTS")
@@ -462,15 +570,37 @@ final class SQLParser {
                 return .exists(query: sub, negated: false)
             }
             if ["COUNT", "SUM", "AVG", "MIN", "MAX"].contains(upper) {
-                return try parseFunctionCall(name: advance().text)
+                let f = try parseFunctionCall(name: advance().text)
+                return try maybeWindow(f)
             }
             throw ParseError(message: "Unexpected keyword '\(current.text)' in expression.",
                              position: current.position)
         case .identifier:
+            let upper = current.text.uppercased()
+            // Typed literals: DATE '…', TIMESTAMP '…', TIME '…'
+            if ["DATE", "TIMESTAMP", "TIME"].contains(upper), peekKind(1) == .string {
+                _ = advance()
+                let value = advance().text
+                return .typedLiteral(type: upper, value: value)
+            }
+            // INTERVAL '90' DAY (or INTERVAL 90 DAY)
+            if upper == "INTERVAL", peekKind(1) == .string || peekKind(1) == .number {
+                _ = advance()
+                let value = advance().text
+                var unit = ""
+                if check(kind: .identifier) { unit = advance().text }
+                return .interval(value: value, unit: unit)
+            }
+            // CAST(expr AS type)
+            if upper == "CAST", peekKind(1) == .leftParen {
+                return try parseCastExpression()
+            }
+
             let name = advance().text
-            // Function call: name(...)
+            // Function call: name(...), possibly a window function.
             if check(kind: .leftParen) {
-                return try parseFunctionCall(name: name, alreadyConsumedName: true)
+                let f = try parseFunctionCall(name: name, alreadyConsumedName: true)
+                return try maybeWindow(f)
             }
             // Qualified column: table.column
             if check(kind: .dot) {
@@ -516,6 +646,97 @@ final class SQLParser {
         }
         _ = try expect(kind: .rightParen, "')'")
         return .function(name: name.uppercased(), args: args, distinct: distinct)
+    }
+
+    /// `CASE [operand] WHEN cond THEN result … [ELSE result] END`
+    private func parseCase() throws -> Expression {
+        _ = advance() // CASE
+        var operand: Expression? = nil
+        if !checkKeyword("WHEN") {
+            operand = try parseExpression() // simple CASE form
+        }
+        var clauses: [WhenClause] = []
+        while matchKeyword("WHEN") {
+            let condition = try parseExpression()
+            try expectKeyword("THEN")
+            let result = try parseExpression()
+            clauses.append(WhenClause(condition: condition, result: result))
+        }
+        var elseResult: Expression? = nil
+        if matchKeyword("ELSE") {
+            elseResult = try parseExpression()
+        }
+        try expectKeyword("END")
+        return .caseExpression(operand: operand, cases: clauses, elseResult: elseResult)
+    }
+
+    /// `CAST ( expr AS type )` — the CAST identifier is current on entry.
+    private func parseCastExpression() throws -> Expression {
+        _ = advance() // CAST
+        _ = try expect(kind: .leftParen, "'(' after CAST")
+        let expression = try parseExpression()
+        try expectKeyword("AS")
+        let type = try parseTypeName()
+        _ = try expect(kind: .rightParen, "')'")
+        return .cast(expression: expression, type: type)
+    }
+
+    /// A (possibly parameterised) SQL type name, e.g. `decimal(15, 2)`,
+    /// `varchar(20)`, `double precision`, `date`.
+    private func parseTypeName() throws -> String {
+        guard current.kind == .identifier || current.kind == .keyword else {
+            throw ParseError(message: "Expected a type name but found '\(currentDescription)'.",
+                             position: current.position)
+        }
+        var name = advance().text
+        // Multi-word type names (e.g. "double precision").
+        while check(kind: .identifier) {
+            name += " " + advance().text
+        }
+        // Parameters: (p) or (p, s).
+        if check(kind: .leftParen) {
+            _ = advance()
+            var params: [String] = []
+            if check(kind: .number) { params.append(advance().text) }
+            while consumeCommaIfPresent() {
+                if check(kind: .number) { params.append(advance().text) }
+            }
+            _ = try expect(kind: .rightParen, "')'")
+            name += "(\(params.joined(separator: ", ")))"
+        }
+        return name
+    }
+
+    /// If the just-parsed function is followed by `OVER (…)`, wrap it as a
+    /// window function; otherwise return it unchanged.
+    private func maybeWindow(_ function: Expression) throws -> Expression {
+        guard checkIdentifierKeyword("OVER") else { return function }
+        _ = advance() // OVER
+        _ = try expect(kind: .leftParen, "'(' after OVER")
+
+        var partitionBy: [Expression] = []
+        if matchIdentifierKeyword("PARTITION") {
+            try expectKeyword("BY")
+            partitionBy = try parseExpressionList()
+        }
+
+        var orderBy: [OrderItem] = []
+        if matchKeyword("ORDER") {
+            try expectKeyword("BY")
+            orderBy = try parseOrderList()
+        }
+
+        // Frame clause (ROWS/RANGE BETWEEN …): captured verbatim.
+        var frame: String? = nil
+        if !check(kind: .rightParen) {
+            var raw = ""
+            while !check(kind: .rightParen) && !check(kind: .eof) {
+                raw += (raw.isEmpty ? "" : " ") + advance().text
+            }
+            frame = raw.isEmpty ? nil : raw
+        }
+        _ = try expect(kind: .rightParen, "')'")
+        return .window(function: function, partitionBy: partitionBy, orderBy: orderBy, frame: frame)
     }
 
     private func peekKeyword(offset: Int, _ word: String) -> Bool {

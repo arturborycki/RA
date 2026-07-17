@@ -55,6 +55,32 @@ extension Expression {
             return "(…)"
         case let .paren(inner):
             return "(\(inner.rendered))"
+        case let .caseExpression(operand, cases, elseResult):
+            var s = "CASE"
+            if let operand { s += " \(operand.rendered)" }
+            for clause in cases {
+                s += " WHEN \(clause.condition.rendered) THEN \(clause.result.rendered)"
+            }
+            if let elseResult { s += " ELSE \(elseResult.rendered)" }
+            s += " END"
+            return s
+        case let .cast(expression, type):
+            return "CAST(\(expression.rendered) AS \(type))"
+        case let .window(function, partitionBy, orderBy, frame):
+            var parts: [String] = []
+            if !partitionBy.isEmpty {
+                parts.append("PARTITION BY " + partitionBy.map { $0.rendered }.joined(separator: ", "))
+            }
+            if !orderBy.isEmpty {
+                let keys = orderBy.map { "\($0.expression.rendered)\($0.descending ? " DESC" : "")" }
+                parts.append("ORDER BY " + keys.joined(separator: ", "))
+            }
+            if let frame { parts.append(frame) }
+            return "\(function.rendered) OVER (\(parts.joined(separator: " ")))"
+        case let .typedLiteral(type, value):
+            return "\(type) '\(value)'"
+        case let .interval(value, unit):
+            return unit.isEmpty ? "INTERVAL '\(value)'" : "INTERVAL '\(value)' \(unit)"
         }
     }
 
@@ -101,16 +127,38 @@ extension SelectItem {
 }
 
 extension Expression {
+    /// Aggregate functions that, when present in the SELECT list, imply a
+    /// grouping (γ) operator.
+    static let aggregateFunctions: Set<String> = [
+        "COUNT", "SUM", "AVG", "MIN", "MAX",
+        "STDDEV", "STDDEV_SAMP", "STDDEV_POP",
+        "VARIANCE", "VAR_SAMP", "VAR_POP",
+        "APPROX_COUNT_DISTINCT", "COUNT_BIG"
+    ]
+
     var containsAggregate: Bool {
         switch self {
-        case let .function(name, _, _):
-            return ["COUNT", "SUM", "AVG", "MIN", "MAX"].contains(name.uppercased())
+        case let .function(name, args, _):
+            if Expression.aggregateFunctions.contains(name.uppercased()) { return true }
+            // A non-aggregate function may still wrap an aggregate argument.
+            return args.contains { $0.containsAggregate }
         case let .binary(_, lhs, rhs):
             return lhs.containsAggregate || rhs.containsAggregate
         case let .unary(_, operand):
             return operand.containsAggregate
         case let .paren(inner):
             return inner.containsAggregate
+        case let .cast(expression, _):
+            return expression.containsAggregate
+        case let .caseExpression(operand, cases, elseResult):
+            if operand?.containsAggregate == true { return true }
+            if cases.contains(where: { $0.condition.containsAggregate || $0.result.containsAggregate }) {
+                return true
+            }
+            return elseResult?.containsAggregate == true
+        case .window:
+            // Window aggregates do NOT collapse rows, so they don't imply γ.
+            return false
         default:
             return false
         }

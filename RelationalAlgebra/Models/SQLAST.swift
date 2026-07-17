@@ -15,6 +15,15 @@ import Foundation
 indirect enum SQLQuery: Equatable {
     case select(SelectStatement)
     case setOperation(SetOperator, left: SQLQuery, right: SQLQuery, all: Bool)
+    /// `WITH cte1 AS (…), cte2 AS (…) <body>` — common table expressions.
+    case with(ctes: [CommonTableExpression], body: SQLQuery)
+}
+
+/// A single named sub-query in a `WITH` clause.
+struct CommonTableExpression: Equatable {
+    var name: String
+    var columns: [String]
+    var query: SQLQuery
 }
 
 enum SetOperator: String, Equatable {
@@ -31,6 +40,8 @@ struct SelectStatement: Equatable {
     var joins: [Join] = []
     var whereClause: Expression? = nil
     var groupBy: [Expression] = []
+    /// `ROLLUP` / `CUBE` / `GROUPING SETS`, when the GROUP BY uses one.
+    var groupByModifier: String? = nil
     var having: Expression? = nil
     var orderBy: [OrderItem] = []
     var limit: Int? = nil
@@ -94,4 +105,20 @@ indirect enum Expression: Equatable {
     case list([Expression])
     case subquery(SQLQuery)
     case paren(Expression)
+    /// `CASE [operand] WHEN … THEN … [ELSE …] END`
+    case caseExpression(operand: Expression?, cases: [WhenClause], elseResult: Expression?)
+    /// `CAST(expr AS type)`
+    case cast(expression: Expression, type: String)
+    /// A window function: `func(args) OVER (PARTITION BY … ORDER BY … frame)`
+    case window(function: Expression, partitionBy: [Expression], orderBy: [OrderItem], frame: String?)
+    /// A typed literal such as `DATE '1998-12-01'` or `TIMESTAMP '…'`.
+    case typedLiteral(type: String, value: String)
+    /// `INTERVAL '90' DAY`
+    case interval(value: String, unit: String)
+}
+
+/// One `WHEN condition THEN result` branch of a CASE expression.
+struct WhenClause: Equatable {
+    var condition: Expression
+    var result: Expression
 }

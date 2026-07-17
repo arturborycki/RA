@@ -69,24 +69,36 @@ right out of the box.
 The parser covers the `SELECT` surface that maps cleanly onto relational
 algebra:
 
+- `WITH` common table expressions (incl. `RECURSIVE`) → labelled sub-derivations
 - `SELECT` list with `*`, `table.*`, expressions, and `AS` aliases → **π / ρ**
 - `DISTINCT` → **δ**
 - `FROM` with multiple comma tables → **× (cartesian product)**
 - `INNER` / `LEFT` / `RIGHT` / `FULL` / `CROSS` `JOIN` … `ON` / `USING` →
   **⋈ / ⟕ / ⟖ / ⟗ / ×**
 - `WHERE` and `HAVING` predicates → **σ**
-- `GROUP BY` with `COUNT` / `SUM` / `AVG` / `MIN` / `MAX` → **γ**
-- `ORDER BY … ASC/DESC` → **τ** (a common RA extension)
+- `GROUP BY` (incl. `ROLLUP` / `CUBE` / `GROUPING SETS`) with `COUNT` / `SUM` /
+  `AVG` / `MIN` / `MAX` / `STDDEV` / `VARIANCE` → **γ**
+- `ORDER BY … ASC/DESC [NULLS FIRST/LAST]` → **τ** (a common RA extension)
+- `LIMIT` / `OFFSET` / `FETCH FIRST n ROWS ONLY`
 - `UNION [ALL]`, `INTERSECT`, `EXCEPT` → **∪ / ∩ / −**
 - Sub-queries in `FROM`, `IN`, scalar comparisons, and `EXISTS` / `NOT EXISTS`
+- `CASE WHEN … THEN … ELSE … END`, `CAST(x AS type)`
+- Window functions: `func(…) OVER (PARTITION BY … ORDER BY … <frame>)`
+- Date / interval literals: `DATE '…'`, `TIMESTAMP '…'`, `INTERVAL '90' DAY`
 - `BETWEEN`, `IN (…)`, `LIKE`, `IS NULL`
 - Function calls including `SUBSTRING(x FROM 1 FOR 2)` / `EXTRACT`-style `FROM`/`FOR` syntax
 - Comments (`--` and `/* */`) and standard operator precedence
 
-Complex analytical queries such as **TPC-H Q22** (derived table + `SUBSTRING(… FROM … FOR …)`
-+ scalar sub-query + `NOT EXISTS` + `GROUP BY`/`ORDER BY`) parse and translate.
-Correlated / scalar sub-queries inside predicates are shown compactly as `(…)`
-within the σ condition rather than expanded into their own derivation.
+### Benchmark coverage
+
+The grammar targets the constructs used by the **TPC-H** (22 queries) and
+**TPC-DS** (99 queries) benchmark suites — CTEs, window functions, `CASE`,
+`CAST`, date/interval arithmetic, grouping extensions, and deeply nested
+sub-queries. Correlated / scalar sub-queries inside predicates are shown
+compactly as `(…)` within the σ condition rather than expanded into their own
+derivation; the outer query's relational-algebra structure is always derived in
+full. If you hit a query that doesn't parse, the editor points at the offending
+token — please file it.
 
 ## Operator legend
 
