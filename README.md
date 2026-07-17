@@ -78,8 +78,15 @@ algebra:
 - `GROUP BY` with `COUNT` / `SUM` / `AVG` / `MIN` / `MAX` → **γ**
 - `ORDER BY … ASC/DESC` → **τ** (a common RA extension)
 - `UNION [ALL]`, `INTERSECT`, `EXCEPT` → **∪ / ∩ / −**
-- Sub-queries in `FROM` and `IN`, plus `BETWEEN`, `IN (…)`, `LIKE`, `IS NULL`
+- Sub-queries in `FROM`, `IN`, scalar comparisons, and `EXISTS` / `NOT EXISTS`
+- `BETWEEN`, `IN (…)`, `LIKE`, `IS NULL`
+- Function calls including `SUBSTRING(x FROM 1 FOR 2)` / `EXTRACT`-style `FROM`/`FOR` syntax
 - Comments (`--` and `/* */`) and standard operator precedence
+
+Complex analytical queries such as **TPC-H Q22** (derived table + `SUBSTRING(… FROM … FOR …)`
++ scalar sub-query + `NOT EXISTS` + `GROUP BY`/`ORDER BY`) parse and translate.
+Correlated / scalar sub-queries inside predicates are shown compactly as `(…)`
+within the σ condition rather than expanded into their own derivation.
 
 ## Operator legend
 

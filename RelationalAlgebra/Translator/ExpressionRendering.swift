@@ -45,6 +45,8 @@ extension Expression {
         case let .inSubquery(value, _, negated):
             let kw = negated ? "NOT IN" : "IN"
             return "\(value.rendered) \(kw) (…)"
+        case let .exists(_, negated):
+            return "\(negated ? "NOT " : "")EXISTS (…)"
         case let .isNull(expr, negated):
             return "\(expr.rendered) IS \(negated ? "NOT " : "")NULL"
         case let .list(items):

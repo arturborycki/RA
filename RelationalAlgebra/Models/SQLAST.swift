@@ -89,6 +89,7 @@ indirect enum Expression: Equatable {
     case between(value: Expression, lower: Expression, upper: Expression, negated: Bool)
     case inList(value: Expression, list: [Expression], negated: Bool)
     case inSubquery(value: Expression, query: SQLQuery, negated: Bool)
+    case exists(query: SQLQuery, negated: Bool)
     case isNull(Expression, negated: Bool)
     case list([Expression])
     case subquery(SQLQuery)

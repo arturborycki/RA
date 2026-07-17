@@ -73,6 +73,70 @@ final class RelationalAlgebraTests: XCTestCase {
         XCTAssertThrowsError(try SQLParser.parse("   "))
     }
 
+    func testParseSubstringFromFor() throws {
+        // SUBSTRING(col FROM 1 FOR 2) — the FROM/FOR argument syntax.
+        let query = try SQLParser.parse(
+            "SELECT SUBSTRING(c_phone FROM 1 FOR 2) AS cc FROM customer")
+        guard case let .select(stmt) = query else { return XCTFail("expected select") }
+        guard case let .expression(expr, alias) = stmt.projections[0] else {
+            return XCTFail("expected expression projection")
+        }
+        XCTAssertEqual(alias, "cc")
+        guard case let .function(name, args, _) = expr else {
+            return XCTFail("expected function")
+        }
+        XCTAssertEqual(name, "SUBSTRING")
+        XCTAssertEqual(args.count, 3)
+    }
+
+    func testParseExists() throws {
+        let query = try SQLParser.parse(
+            "SELECT * FROM customer WHERE EXISTS (SELECT * FROM orders WHERE o_custkey = c_custkey)")
+        guard case let .select(stmt) = query else { return XCTFail("expected select") }
+        XCTAssertNotNil(stmt.whereClause)
+    }
+
+    func testParseNotExists() throws {
+        let query = try SQLParser.parse(
+            "SELECT * FROM customer WHERE NOT EXISTS (SELECT * FROM orders WHERE o_custkey = c_custkey)")
+        let result = RATranslator().translate(query)
+        XCTAssertTrue(result.finalExpression.formula.contains("EXISTS"))
+    }
+
+    func testParseScalarSubqueryComparison() throws {
+        let query = try SQLParser.parse(
+            "SELECT c_acctbal FROM customer WHERE c_acctbal > (SELECT AVG(c_acctbal) FROM customer)")
+        guard case .select = query else { return XCTFail("expected select") }
+    }
+
+    func testParseTpchQ22LikeQuery() throws {
+        // TPC-H Q22: derived table + SUBSTRING(FROM/FOR) + scalar subquery +
+        // NOT EXISTS + GROUP BY / ORDER BY. Should parse and translate cleanly.
+        let sql = """
+        select cntrycode, count(*) as numcust, sum(c_acctbal) as totacctbal
+        from (
+            select substring(c_phone from 1 for 2) as cntrycode, c_acctbal
+            from customer
+            where substring(c_phone from 1 for 2) in ('13', '31', '23')
+              and c_acctbal > (
+                  select avg(c_acctbal) from customer
+                  where c_acctbal > 0.00
+                    and substring(c_phone from 1 for 2) in ('13', '31', '23')
+              )
+              and not exists (
+                  select * from orders where o_custkey = c_custkey
+              )
+        ) as custsale
+        group by cntrycode
+        order by cntrycode;
+        """
+        let query = try SQLParser.parse(sql)
+        let result = RATranslator().translate(query)
+        XCTAssertFalse(result.steps.isEmpty)
+        // Outer query groups and aggregates.
+        XCTAssertTrue(result.finalExpression.formula.contains(RASymbol.group))
+    }
+
     // MARK: - Translator
 
     func testTranslateProducesSelectionAndProjection() throws {

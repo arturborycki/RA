@@ -454,6 +454,13 @@ final class SQLParser {
             if upper == "TRUE" { _ = advance(); return .boolLiteral(true) }
             if upper == "FALSE" { _ = advance(); return .boolLiteral(false) }
             if upper == "NULL" { _ = advance(); return .nullLiteral }
+            if upper == "EXISTS" {
+                _ = advance()
+                _ = try expect(kind: .leftParen, "'(' after EXISTS")
+                let sub = try parseQuery()
+                _ = try expect(kind: .rightParen, "')'")
+                return .exists(query: sub, negated: false)
+            }
             if ["COUNT", "SUM", "AVG", "MIN", "MAX"].contains(upper) {
                 return try parseFunctionCall(name: advance().text)
             }
@@ -493,8 +500,18 @@ final class SQLParser {
             args = [.star]
         } else if !check(kind: .rightParen) {
             args.append(try parseExpression())
-            while consumeCommaIfPresent() {
-                args.append(try parseExpression())
+            // Accept comma-separated args, and also the SQL `FROM` / `FOR`
+            // separators used by SUBSTRING / TRIM / EXTRACT-style functions,
+            // e.g. SUBSTRING(c_phone FROM 1 FOR 2).
+            while true {
+                if consumeCommaIfPresent() {
+                    args.append(try parseExpression())
+                } else if checkKeyword("FROM") || checkKeyword("FOR") {
+                    _ = advance()
+                    args.append(try parseExpression())
+                } else {
+                    break
+                }
             }
         }
         _ = try expect(kind: .rightParen, "')'")
