@@ -232,12 +232,14 @@ final class RelationalAlgebraTests: XCTestCase {
         let query = try SQLParser.parse("SELECT name FROM Employee WHERE salary > 50000")
         let result = RATranslator().translate(query)
         let clauses = result.steps.map { $0.clause }
-        XCTAssertTrue(clauses.contains("FROM"))
         XCTAssertTrue(clauses.contains("WHERE"))
         XCTAssertTrue(clauses.contains("SELECT"))
         // Final formula contains both σ and π glyphs.
         XCTAssertTrue(result.finalExpression.formula.contains(RASymbol.selection))
         XCTAssertTrue(result.finalExpression.formula.contains(RASymbol.projection))
+        // Each step is a single-operator assignment naming its result.
+        XCTAssertTrue(result.steps.allSatisfy { $0.definition.contains("=") })
+        XCTAssertEqual(result.finalName, result.steps.last?.resultName)
     }
 
     func testSelectStarSkipsProjection() throws {

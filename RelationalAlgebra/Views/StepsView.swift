@@ -31,11 +31,19 @@ struct StepsView: View {
     }
 
     private func finalResultCard(_ translation: RATranslation) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Final expression", systemImage: "checkmark.seal.fill")
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Final result: \(translation.finalName)", systemImage: "checkmark.seal.fill")
                 .font(.headline)
                 .foregroundStyle(.green)
-            FormulaText(formula: translation.finalExpression.formula)
+            Text("The steps above build up \(translation.finalName). Expand for the single fully-nested expression.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            DisclosureGroup("Fully expanded expression") {
+                FormulaText(formula: translation.finalExpression.formula)
+                    .padding(.top, 6)
+            }
+            .font(.subheadline.weight(.semibold))
+            .tint(.green)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
@@ -62,13 +70,16 @@ struct StepCard: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Text(step.resultName)
+                    .font(.system(.subheadline, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
             }
 
             Text(step.explanation)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            FormulaText(formula: step.expression.formula)
+            FormulaText(formula: step.definition)
         }
         .padding()
         .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
