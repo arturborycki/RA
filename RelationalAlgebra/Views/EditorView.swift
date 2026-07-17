@@ -64,7 +64,10 @@ struct EditorView: View {
 
     private var statusBar: some View {
         HStack {
-            if viewModel.errorMessage == nil {
+            if viewModel.isEmpty {
+                Label("Empty", systemImage: "text.cursor")
+                    .foregroundStyle(.secondary)
+            } else if viewModel.errorMessage == nil {
                 Label("Parsed", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             } else {

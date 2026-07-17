@@ -58,8 +58,20 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// Whether the editor is empty (ignoring whitespace).
+    var isEmpty: Bool {
+        sqlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     func parseNow() {
         let text = sqlText
+        // An empty editor is not an error — just show empty results.
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            translation = nil
+            errorMessage = nil
+            errorPosition = nil
+            return
+        }
         do {
             let query = try SQLParser.parse(text)
             let result = RATranslator().translate(query)
