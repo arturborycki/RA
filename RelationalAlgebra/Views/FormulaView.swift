@@ -17,7 +17,7 @@ struct FormulaView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Relational algebra expression").font(.headline)
-                        FormulaText(expression.formula)
+                        FormulaText(formula: expression.formula)
                     }
 
                     legend

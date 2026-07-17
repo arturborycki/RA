@@ -35,7 +35,7 @@ struct StepsView: View {
             Label("Final expression", systemImage: "checkmark.seal.fill")
                 .font(.headline)
                 .foregroundStyle(.green)
-            FormulaText(translation.finalExpression.formula)
+            FormulaText(formula: translation.finalExpression.formula)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
@@ -68,7 +68,7 @@ struct StepCard: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            FormulaText(step.expression.formula)
+            FormulaText(formula: step.expression.formula)
         }
         .padding()
         .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
