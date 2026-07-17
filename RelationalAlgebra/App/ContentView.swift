@@ -73,27 +73,32 @@ struct ResultsView: View {
     @Binding var selectedTab: ResultTab
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("View", selection: $selectedTab) {
-                ForEach(ResultTab.allCases) { tab in
-                    Label(tab.rawValue, systemImage: tab.systemImage).tag(tab)
+        // GeometryReader resolves to the detail area's *actual* finite size.
+        // Hard-constraining the stack to that height gives the inner scroll
+        // views a bounded viewport, so they scroll instead of overflowing.
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                Picker("View", selection: $selectedTab) {
+                    ForEach(ResultTab.allCases) { tab in
+                        Label(tab.rawValue, systemImage: tab.systemImage).tag(tab)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .padding()
+
+                if let error = viewModel.errorMessage {
+                    ErrorBanner(message: error)
+                        .padding(.horizontal)
+                        .padding(.bottom, 8)
+                }
+
+                Divider()
+
+                resultContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .pickerStyle(.segmented)
-            .padding()
-
-            if let error = viewModel.errorMessage {
-                ErrorBanner(message: error)
-                    .padding(.horizontal)
-                    .padding(.bottom, 8)
-            }
-
-            Divider()
-
-            resultContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemGroupedBackground))
     }
 
