@@ -90,16 +90,20 @@ struct ResultsView: View {
 
             Divider()
 
-            Group {
-                switch selectedTab {
-                case .steps:   StepsView()
-                case .formula: FormulaView()
-                case .diagram: TreeView()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            resultContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemGroupedBackground))
+    }
+
+    @ViewBuilder
+    private var resultContent: some View {
+        switch selectedTab {
+        case .steps:   StepsView()
+        case .formula: FormulaView()
+        case .diagram: TreeView()
+        }
     }
 }
 
