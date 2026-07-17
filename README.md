@@ -57,6 +57,13 @@ Plus a pannable / zoomable tree diagram of the same expression.
 - **Import** a `.sql` / text file via the iOS document picker.
 - **Examples** menu with six ready-made queries.
 
+## Appearance
+
+A toolbar menu switches between **System / Light / Dark** appearance; the choice
+is remembered across launches (`@AppStorage`) and defaults to following the iPad
+system setting. All colors use dynamic system semantics, so both themes look
+right out of the box.
+
 ## Supported SQL
 
 The parser covers the `SELECT` surface that maps cleanly onto relational

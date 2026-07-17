@@ -25,6 +25,7 @@ enum ResultTab: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @EnvironmentObject private var viewModel: AppViewModel
+    @AppStorage("appTheme") private var appTheme: AppTheme = .system
     @State private var selectedTab: ResultTab = .steps
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
@@ -37,8 +38,32 @@ struct ContentView: View {
             ResultsView(selectedTab: $selectedTab)
                 .navigationTitle("Relational Algebra")
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        ThemePicker(theme: $appTheme)
+                    }
+                }
         }
         .navigationSplitViewStyle(.balanced)
+        .preferredColorScheme(appTheme.colorScheme)
+    }
+}
+
+/// A menu that lets the user pick System / Light / Dark appearance.
+struct ThemePicker: View {
+    @Binding var theme: AppTheme
+
+    var body: some View {
+        Menu {
+            Picker("Appearance", selection: $theme) {
+                ForEach(AppTheme.allCases) { option in
+                    Label(option.label, systemImage: option.systemImage).tag(option)
+                }
+            }
+        } label: {
+            Label("Appearance", systemImage: theme.systemImage)
+        }
+        .help("Appearance: \(theme.label)")
     }
 }
 
