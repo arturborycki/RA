@@ -1,4 +1,8 @@
-# RA — SQL → Relational Algebra for iPadOS
+<p align="center">
+  <img src="docs/icon.png" alt="RA app icon" width="160" height="160">
+</p>
+
+<h1 align="center">RA — SQL → Relational Algebra for iPadOS</h1>
 
 A native **iPadOS** app that converts a SQL query — typed, pasted, or imported
 from a `.sql` file — into a **step-by-step relational-algebra derivation**, a
