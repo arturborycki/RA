@@ -2,11 +2,12 @@
 //  FormulaView.swift
 //  RelationalAlgebra
 //
-//  Shows the final relational-algebra expression on its own, plus a legend of
-//  the operator glyphs so the notation is self-explanatory.
+//  Shows the final relational-algebra expression, pretty-printed as an indented
+//  tree, plus a legend of the operator glyphs so the notation is self-explanatory.
 //
 
 import SwiftUI
+import UIKit
 
 struct FormulaView: View {
     @EnvironmentObject private var viewModel: AppViewModel
@@ -14,12 +15,8 @@ struct FormulaView: View {
     var body: some View {
         if let expression = viewModel.translation?.finalExpression {
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Relational algebra expression").font(.headline)
-                        FormulaText(formula: expression.formula)
-                    }
-
+                VStack(alignment: .leading, spacing: 20) {
+                    PrettyFormulaCard(expression: expression)
                     legend
                 }
                 .padding()
@@ -31,19 +28,18 @@ struct FormulaView: View {
     }
 
     private var legend: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("Notation").font(.headline)
             ForEach(Self.legendEntries, id: \.symbol) { entry in
                 HStack(alignment: .firstTextBaseline, spacing: 14) {
                     Text(entry.symbol)
                         .font(.system(.title3, design: .serif))
-                        .frame(width: 28, alignment: .center)
+                        .frame(width: 26, alignment: .center)
                         .foregroundStyle(Color.accentColor)
                     Text(entry.meaning)
                         .font(.subheadline)
-                    Spacer()
+                    Spacer(minLength: 0)
                 }
-                .padding(.vertical, 2)
             }
         }
         .padding()
@@ -63,4 +59,41 @@ struct FormulaView: View {
         (RASymbol.sort,       "Sort (ORDER BY)"),
         (RASymbol.union,      "Union / intersection / difference"),
     ]
+}
+
+/// A card that renders the RA expression pretty-printed over multiple indented
+/// lines, in a horizontally-scrollable monospaced block with a copy button.
+struct PrettyFormulaCard: View {
+    let expression: RANode
+
+    private var pretty: String { expression.prettyFormula }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Relational algebra expression", systemImage: "function")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    UIPasteboard.general.string = pretty
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+            }
+
+            ScrollView(.horizontal, showsIndicators: true) {
+                Text(pretty)
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                    .lineSpacing(4)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(12)
+            }
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(.tertiarySystemGroupedBackground)))
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
+    }
 }

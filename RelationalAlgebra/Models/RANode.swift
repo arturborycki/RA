@@ -60,6 +60,72 @@ indirect enum RANode: Equatable {
 
 extension RANode {
 
+    /// A multi-line, indented rendering of the expression — reads top-down like
+    /// formatted code, one operator per line with its operands nested beneath.
+    var prettyFormula: String {
+        prettyLines(indent: 0).joined(separator: "\n")
+    }
+
+    private func prettyLines(indent: Int) -> [String] {
+        let unit = "    " // 4 spaces per level
+        let pad = String(repeating: unit, count: indent)
+        let opPad = String(repeating: unit, count: indent + 1)
+
+        func unary(_ head: String, _ child: RANode) -> [String] {
+            [pad + head + " ("] + child.prettyLines(indent: indent + 1) + [pad + ")"]
+        }
+        func binary(_ glyph: String, _ lhs: RANode, _ rhs: RANode) -> [String] {
+            [pad + "("]
+                + lhs.prettyLines(indent: indent + 1)
+                + [opPad + glyph]
+                + rhs.prettyLines(indent: indent + 1)
+                + [pad + ")"]
+        }
+
+        switch self {
+        case let .relation(name, alias):
+            if let alias, alias != name {
+                return unary("\(RASymbol.rename)[\(alias)]", .relation(name: name, alias: nil))
+            }
+            return [pad + name]
+        case let .selection(condition, child):
+            return unary("\(RASymbol.selection)[\(condition)]", child)
+        case let .projection(attributes, child):
+            return unary("\(RASymbol.projection)[\(attributes.joined(separator: ", "))]", child)
+        case let .rename(alias, child):
+            return unary("\(RASymbol.rename)[\(alias)]", child)
+        case let .join(condition, lhs, rhs):
+            let glyph = condition.map { "\(RASymbol.join)[\($0)]" } ?? RASymbol.join
+            return binary(glyph, lhs, rhs)
+        case let .outerJoin(kind, condition, lhs, rhs):
+            let base: String
+            switch kind {
+            case .left:  base = RASymbol.leftJoin
+            case .right: base = RASymbol.rightJoin
+            case .full:  base = RASymbol.fullJoin
+            }
+            let glyph = condition.map { "\(base)[\($0)]" } ?? base
+            return binary(glyph, lhs, rhs)
+        case let .cross(lhs, rhs):
+            return binary(RASymbol.cross, lhs, rhs)
+        case let .group(grouping, aggregates, child):
+            let left = grouping.joined(separator: ", ")
+            let right = aggregates.joined(separator: ", ")
+            let sub = left.isEmpty ? right : (right.isEmpty ? left : "\(left); \(right)")
+            return unary("\(RASymbol.group)[\(sub)]", child)
+        case let .distinct(child):
+            return unary(RASymbol.distinct, child)
+        case let .sort(keys, child):
+            return unary("\(RASymbol.sort)[\(keys.joined(separator: ", "))]", child)
+        case let .union(lhs, rhs):
+            return binary(RASymbol.union, lhs, rhs)
+        case let .intersect(lhs, rhs):
+            return binary(RASymbol.intersect, lhs, rhs)
+        case let .difference(lhs, rhs):
+            return binary(RASymbol.difference, lhs, rhs)
+        }
+    }
+
     /// A single-line formula using subscript-in-brackets notation, e.g.
     /// `π[name] ( σ[age > 30] ( Employee ) )`.
     var formula: String {

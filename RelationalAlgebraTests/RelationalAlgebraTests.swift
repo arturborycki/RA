@@ -219,6 +219,17 @@ final class RelationalAlgebraTests: XCTestCase {
         XCTAssertTrue(result.finalExpression.formula.contains(RASymbol.sort))
     }
 
+    func testPrettyFormulaIsIndentedMultiline() throws {
+        let query = try SQLParser.parse("SELECT name FROM Employee WHERE salary > 50000")
+        let result = RATranslator().translate(query)
+        let pretty = result.finalExpression.prettyFormula
+        // Multiple lines, indentation present, operators on their own lines.
+        XCTAssertTrue(pretty.contains("\n"))
+        XCTAssertTrue(pretty.contains("    ")) // indent unit
+        XCTAssertTrue(pretty.contains(RASymbol.projection))
+        XCTAssertTrue(pretty.contains(RASymbol.selection))
+    }
+
     func testFetchFirst() throws {
         let query = try SQLParser.parse(
             "SELECT * FROM item ORDER BY i_item_sk FETCH FIRST 100 ROWS ONLY")
