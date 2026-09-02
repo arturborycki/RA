@@ -18,10 +18,11 @@ import Foundation
 struct SampleQuery: Identifiable, Hashable {
     let id = UUID()
     let title: String
-    let sql: String
     /// Table declarations to load above the query, so a domain-calculus atom
-    /// has a real arity and column order to work from.
+    /// has a real arity and column order to work from. Declared before `sql`
+    /// so the memberwise initialiser reads in the order the editor shows them.
     var schema: String? = nil
+    let sql: String
 
     /// What actually goes into the editor.
     var text: String {
