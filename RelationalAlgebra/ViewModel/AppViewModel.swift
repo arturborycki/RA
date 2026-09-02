@@ -50,11 +50,14 @@ final class AppViewModel: ObservableObject {
     /// The domain-relational-calculus translation.
     var drc: CalcTranslation? { result?.drc }
 
+    /// The calculus translation a notation shows, or `nil` for the notations
+    /// that are not a single calculus — the algebra, and compare mode, which
+    /// reads `result` directly because it shows all three at once.
     func calculus(_ notation: Notation) -> CalcTranslation? {
         switch notation {
-        case .ra:  return nil
-        case .trc: return trc
-        case .drc: return drc
+        case .ra, .compare: return nil
+        case .trc:          return trc
+        case .drc:          return drc
         }
     }
 
