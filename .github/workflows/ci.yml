@@ -51,6 +51,7 @@ jobs:
         if: failure()
         run: |
           echo "===== errors and test failures ====="
-          grep -E "error:|note: add|XCTAssertion|failed \(|Testing failed" build.log \
-            | grep -v "^ *cd " | sed 's#/Users/runner/work/RA/RA/##' | head -60 || true
+          grep -E "error:|note:|XCTAssertion|failed \(|Testing failed" build.log \
+            | grep -v "^ *cd " | grep -v "note: Emplaced" \
+            | sed 's#/Users/runner/work/RA/RA/##' | head -80 || true
           echo "===== end ====="

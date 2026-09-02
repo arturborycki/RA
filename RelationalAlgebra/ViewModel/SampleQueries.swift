@@ -43,6 +43,9 @@ struct SampleGroup: Identifiable, Hashable {
 
 enum SampleQueries {
 
+    // Explicitly typed, and declared after the groups they name: a static
+    // property whose type must be inferred while another static property is
+    // being type-checked is how "circular reference" happens.
     static let groups: [SampleGroup] = [basics, tpch, tpcds]
 
     /// Every bundled query, flattened — what the test suite runs over.
@@ -50,7 +53,7 @@ enum SampleQueries {
 
     // MARK: - Basics
 
-    static let basics = SampleGroup(
+    static let basics: SampleGroup = SampleGroup(
         title: "Basics",
         note: "One construct at a time.",
         queries: [
@@ -129,7 +132,7 @@ enum SampleQueries {
 
     // MARK: - TPC-H
 
-    static let tpch = SampleGroup(
+    static let tpch: SampleGroup = SampleGroup(
         title: "TPC-H",
         note: "A selection of the 22 decision-support queries, with their schema.",
         queries: [
@@ -275,7 +278,7 @@ enum SampleQueries {
 
     // MARK: - TPC-DS
 
-    static let tpcds = SampleGroup(
+    static let tpcds: SampleGroup = SampleGroup(
         title: "TPC-DS",
         note: "A few of the 99 queries. No schema is bundled, so the domain " +
               "atoms are marked incomplete — declare the tables to fix that.",
