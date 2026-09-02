@@ -882,6 +882,36 @@ final class CalculusTests: XCTestCase {
         }
     }
 
+    /// The one test that says "every bundled example works": each parses, and
+    /// each produces a rendered expression in all three notations without a
+    /// crash, an empty result or an unsafe formula.
+    func testEveryBundledQueryWorksInAllThreeNotations() throws {
+        for group in SampleQueries.groups {
+            for sample in group.queries {
+                let label = "\(group.title) / \(sample.title)"
+                let script = try SQLParser.parseScript(sample.text)
+                let bundle = AppViewModel.translate(script)
+
+                let algebra = bundle.ra.finalExpression.formula
+                XCTAssertFalse(algebra.isEmpty, "\(label): no algebra expression")
+
+                for translation in [bundle.trc, bundle.drc] {
+                    let dialect = translation.dialect.rawValue
+                    let rendered = translation.prettyText()
+                    XCTAssertTrue(rendered.contains("{"), "\(label) \(dialect): \(rendered)")
+                    XCTAssertFalse(translation.steps.isEmpty, "\(label) \(dialect): no steps")
+                    XCTAssertTrue(SafetyChecker.check(translation).isEmpty,
+                                  "\(label) \(dialect) is unsafe: " +
+                                  "\(SafetyChecker.check(translation).map(\.message))")
+                    // Simplification must reach a fixpoint within the bound.
+                    let once = CalcSimplifier.simplify(translation.root).expression
+                    XCTAssertEqual(once, CalcSimplifier.simplify(once).expression,
+                                   "\(label) \(dialect): simplification did not converge")
+                }
+            }
+        }
+    }
+
     func testBenchmarkSamplesCarryTheirSchemaWhereBundled() throws {
         for sample in SampleQueries.tpch.queries {
             let script = try SQLParser.parseScript(sample.text)

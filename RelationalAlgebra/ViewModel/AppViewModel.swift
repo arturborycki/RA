@@ -24,7 +24,7 @@ struct TranslationBundle {
 @MainActor
 final class AppViewModel: ObservableObject {
 
-    @Published var sqlText: String = SampleQueries.all[0].sql {
+    @Published var sqlText: String = SampleQueries.all[0].text {
         didSet { scheduleParse() }
     }
 

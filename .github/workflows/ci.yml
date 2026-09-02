@@ -1,0 +1,44 @@
+name: Build and test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: xcodebuild test
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: xcodebuild -version
+
+      # Pick a real, available simulator rather than pinning a device name that
+      # changes with every Xcode release. Prefer an iPad — the layout is built
+      # for one — and fall back to whatever iOS simulator exists.
+      - name: Choose a simulator
+        id: sim
+        run: |
+          NAME=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          runtimes = json.load(sys.stdin)["devices"]
+          devices = [d for rt, ds in runtimes.items() if "iOS" in rt for d in ds]
+          ipads = [d["name"] for d in devices if "iPad" in d["name"]]
+          print((ipads or [d["name"] for d in devices])[0])
+          ')
+          if [ -z "$NAME" ]; then echo "No iOS simulator available"; exit 1; fi
+          echo "Using simulator: $NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project RelationalAlgebra.xcodeproj \
+            -scheme RelationalAlgebra \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
+            CODE_SIGNING_ALLOWED=NO

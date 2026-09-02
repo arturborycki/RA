@@ -193,8 +193,8 @@ enum SampleQueries {
                 SELECT SUM(l_extendedprice * l_discount) AS revenue
                 FROM lineitem
                 WHERE l_shipdate >= DATE '1994-01-01'
-                  AND l_shipdate < DATE '1995-01-01'
-                  AND l_discount BETWEEN 0.05 AND 0.07
+                  AND l_shipdate < DATE '1994-01-01' + INTERVAL '1' YEAR
+                  AND l_discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01
                   AND l_quantity < 24;
                 """),
 
@@ -206,6 +206,7 @@ enum SampleQueries {
                 FROM partsupp, part
                 WHERE p_partkey = ps_partkey
                   AND p_brand <> 'Brand#45'
+                  AND p_type NOT LIKE 'MEDIUM POLISHED%'
                   AND p_size IN (49, 14, 23, 45, 19, 3, 36, 9)
                   AND ps_suppkey NOT IN (
                     SELECT s_suppkey FROM supplier
@@ -218,13 +219,13 @@ enum SampleQueries {
                 title: "Q17 — Small-quantity-order revenue",
                 schema: TPCHSchema.declarations(for: ["lineitem", "part"]),
                 sql: """
-                SELECT SUM(l_extendedprice) AS avg_yearly
+                SELECT SUM(l_extendedprice) / 7.0 AS avg_yearly
                 FROM lineitem, part
                 WHERE p_partkey = l_partkey
                   AND p_brand = 'Brand#23'
                   AND p_container = 'MED BOX'
                   AND l_quantity < (
-                    SELECT AVG(l_quantity) FROM lineitem WHERE l_partkey = p_partkey);
+                    SELECT 0.2 * AVG(l_quantity) FROM lineitem WHERE l_partkey = p_partkey);
                 """),
 
             SampleQuery(
@@ -306,7 +307,7 @@ enum SampleQueries {
                 SELECT c_customer_id
                 FROM customer_total_return ctr1, store, customer
                 WHERE ctr1.ctr_total_return > (
-                    SELECT AVG(ctr_total_return) FROM customer_total_return ctr2
+                    SELECT AVG(ctr_total_return) * 1.2 FROM customer_total_return ctr2
                     WHERE ctr1.ctr_store_sk = ctr2.ctr_store_sk)
                   AND s_store_sk = ctr1.ctr_store_sk
                   AND s_state = 'TN'
@@ -325,8 +326,9 @@ enum SampleQueries {
                   AND s.ss_sold_date_sk = d.d_date_sk
                   AND s.ss_item_sk = i.i_item_sk
                   AND d.d_month_seq = (
-                    SELECT d_month_seq FROM date_dim WHERE d_year = 2001 AND d_moy = 1)
-                  AND i.i_current_price > (
+                    SELECT DISTINCT d_month_seq FROM date_dim
+                    WHERE d_year = 2001 AND d_moy = 1)
+                  AND i.i_current_price > 1.2 * (
                     SELECT AVG(j.i_current_price) FROM item j WHERE j.i_category = i.i_category)
                 GROUP BY a.ca_state
                 HAVING COUNT(*) >= 10
