@@ -82,6 +82,16 @@ struct CalculusFormulaCard: View {
         showSimplified ? translation.simplifiedText() : translation.prettyText()
     }
 
+    /// The same expression in each export form. LaTeX is the one worth having:
+    /// the audience is students writing an answer up.
+    private var exports: [(String, String)] {
+        var view = translation
+        if showSimplified { view.root = translation.simplified }
+        return CalcRenderer.Style.allCases.map { style in
+            (style.label, CalcRenderer(style: style).inline(view))
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -90,12 +100,7 @@ struct CalculusFormulaCard: View {
                       systemImage: "function")
                     .font(.headline)
                 Spacer()
-                Button {
-                    UIPasteboard.general.string = text
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                }
-                .buttonStyle(.borderless)
+                ExportMenu(exports: exports)
             }
 
             if translation.isSimplified {

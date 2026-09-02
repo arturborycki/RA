@@ -193,6 +193,14 @@ final class DRCLoweringEngine {
             return .application(name: name, args: args.map { lower($0) }, distinct: distinct)
         case let .binaryOp(op, lhs, rhs):
             return .binaryOp(op: op, lhs: lower(lhs), rhs: lower(rhs))
+        case let .aggregate(spec):
+            var updated = spec
+            // Condition first: its atoms establish the tuple variables that the
+            // collected element then refers to.
+            updated.condition = lower(spec.condition)
+            updated.element = spec.element.map { lower($0) }
+            updated.variables = domainVariables(of: spec.variables)
+            return .aggregate(updated)
         case .literal, .opaque:
             return term
         }

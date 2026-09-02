@@ -292,7 +292,7 @@ final class RelationalAlgebraTests: XCTestCase {
         XCTAssertTrue(containsLeaf(tree, named: "Employee"))
     }
 
-    private func containsLeaf(_ node: RATreeNode, named name: String) -> Bool {
+    private func containsLeaf(_ node: DiagramNode, named name: String) -> Bool {
         if node.isLeaf && node.symbol == name { return true }
         return node.children.contains { containsLeaf($0, named: name) }
     }

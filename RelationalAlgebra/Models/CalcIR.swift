@@ -66,6 +66,9 @@ indirect enum CalcTerm: Equatable {
     case application(name: String, args: [CalcTerm], distinct: Bool)
     /// An infix arithmetic or concatenation operator: `x + y`, `a || b`.
     case binaryOp(op: String, lhs: CalcTerm, rhs: CalcTerm)
+    /// An aggregate over a set comprehension — an *extension* to the pure
+    /// calculus, which has no aggregation at all. See `AggregateSpec`.
+    case aggregate(AggregateSpec)
     /// Anything not yet given structure, carrying its pre-rendered text.
     /// Always accompanied by a diagnostic so it is never silently approximated.
     case opaque(String)
@@ -80,7 +83,34 @@ extension CalcTerm {
         case .literal, .opaque:             return []
         case let .application(_, args, _):  return args.reduce(into: Set()) { $0.formUnion($1.variables) }
         case let .binaryOp(_, lhs, rhs):    return lhs.variables.union(rhs.variables)
+        case let .aggregate(spec):          return spec.freeVariables
         }
+    }
+}
+
+/// An aggregate over a set comprehension: `COUNT{ u | Employee(u) ∧ u.dept_id = d }`.
+///
+/// First-order relational calculus has no aggregation, so this is a documented
+/// *extension*, labelled as one wherever it appears. The shape is the one
+/// textbooks reach for when they introduce aggregation: a function applied to
+/// the multiset a comprehension collects.
+struct AggregateSpec: Equatable {
+    /// COUNT, SUM, AVG, MIN, MAX …
+    var function: String
+    var distinct: Bool
+    /// The value collected per qualifying tuple. `nil` for `COUNT(*)`, which
+    /// counts tuples rather than values.
+    var element: CalcTerm?
+    /// The variables the comprehension binds — its own scope.
+    var variables: [CalcVar]
+    /// What qualifies a tuple for this group.
+    var condition: CalcFormula
+
+    /// Variables referred to from *outside* the comprehension — the grouping
+    /// variables that make one comprehension per group rather than one overall.
+    var freeVariables: Set<CalcVar> {
+        let inner = condition.freeVariables.union(element?.variables ?? [])
+        return inner.subtracting(variables)
     }
 }
 

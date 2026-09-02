@@ -37,7 +37,20 @@ extension CalcTerm {
             return "\(lhs.plainText) \(op) \(rhs.plainText)"
         case let .opaque(text):
             return text
+        case let .aggregate(spec):
+            return spec.plainText
         }
+    }
+}
+
+extension AggregateSpec {
+    /// `COUNT{ u | Employee(u) ∧ u.dept_id = d }`, or with the collected value
+    /// named where the aggregate is over one: `AVG{ u.salary | … }`.
+    var plainText: String {
+        let renderer = CalcRenderer()
+        let collected = element?.plainText ?? variables.map(\.name).joined(separator: ", ")
+        let prefix = distinct ? "DISTINCT " : ""
+        return "\(function){ \(prefix)\(collected) \(CalcSymbol.such) \(renderer.inline(condition)) }"
     }
 }
 
@@ -45,12 +58,83 @@ extension CalcTerm {
 
 struct CalcRenderer {
 
+    /// Which glyph set to write. The tree is the same either way — only the
+    /// symbols change, which is the whole point of rendering from an IR.
+    enum Style: String, CaseIterable, Identifiable {
+        /// ∃t ( R(t) ∧ t.a > 5 ) — the screen and clipboard form.
+        case unicode
+        /// EXISTS t ( R(t) AND t.a > 5 ) — for plain-text destinations.
+        case ascii
+        /// \exists t\,( R(t) \wedge t.a > 5 ) — for writing the answer up.
+        case latex
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .unicode: return "Unicode"
+            case .ascii:   return "Plain text"
+            case .latex:   return "LaTeX"
+            }
+        }
+    }
+
     /// How wide a line may get before the pretty printer breaks it.
     var lineWidth: Int = 64
+    var style: Style = .unicode
 
-    init(lineWidth: Int = 64) {
+    init(lineWidth: Int = 64, style: Style = .unicode) {
         self.lineWidth = lineWidth
+        self.style = style
     }
+
+    // MARK: Style transcription
+
+    /// Rewrite a finished Unicode rendering into the chosen style.
+    ///
+    /// A transcription pass rather than a style threaded through every call:
+    /// the logic glyphs are characters that never occur in an identifier, so the
+    /// substitution is unambiguous, and one rendering path stays one path.
+    private func transcribe(_ text: String) -> String {
+        switch style {
+        case .unicode:
+            return text
+        case .ascii:
+            return CalcRenderer.asciiGlyphs.reduce(text) {
+                $0.replacingOccurrences(of: $1.key, with: $1.value)
+            }
+        case .latex:
+            // Escape first: the LaTeX commands substituted below are all
+            // backslash-prefixed, and escaping after would break them.
+            let escaped = [("\\", "\\backslash "), ("_", "\\_"), ("%", "\\%"),
+                           ("&", "\\&"), ("#", "\\#")]
+                .reduce(text) { $0.replacingOccurrences(of: $1.0, with: $1.1) }
+            return CalcRenderer.latexGlyphs.reduce(escaped) {
+                $0.replacingOccurrences(of: $1.key, with: $1.value)
+            }
+        }
+    }
+
+    private static let asciiGlyphs: [String: String] = [
+        CalcSymbol.exists: "EXISTS ", CalcSymbol.forAll: "FORALL ",
+        CalcSymbol.and: "AND", CalcSymbol.or: "OR", CalcSymbol.not: "NOT ",
+        CalcSymbol.implies: "->", CalcSymbol.union: "UNION",
+        CalcSymbol.intersect: "INTERSECT", CalcSymbol.difference: "MINUS",
+        CalcSymbol.openTuple: "<", CalcSymbol.closeTuple: ">",
+        "≠": "<>", "≤": "<=", "≥": ">=", "…": "...", "↑": "asc", "↓": "desc"
+    ]
+
+    private static let latexGlyphs: [String: String] = [
+        "{": "\\{", "}": "\\}",
+        CalcSymbol.exists: "\\exists ", CalcSymbol.forAll: "\\forall ",
+        CalcSymbol.and: "\\wedge", CalcSymbol.or: "\\vee", CalcSymbol.not: "\\neg ",
+        CalcSymbol.implies: "\\rightarrow", CalcSymbol.union: "\\cup",
+        CalcSymbol.intersect: "\\cap", CalcSymbol.difference: "\\setminus",
+        CalcSymbol.openTuple: "\\langle ", CalcSymbol.closeTuple: "\\rangle ",
+        CalcSymbol.such: "\\mid", CalcSymbol.renameArrow: "\\to",
+        "≠": "\\neq", "≤": "\\leq", "≥": "\\geq", "…": "\\ldots",
+        "↑": "\\uparrow", "↓": "\\downarrow"
+    ]
 
     // MARK: Whole translations
 
@@ -61,7 +145,7 @@ struct CalcRenderer {
             blocks.append("\(definition.name) =\n" + indent(pretty(definition.expression), by: 1))
         }
         blocks.append(pretty(translation.root))
-        return blocks.joined(separator: "\n\n")
+        return transcribe(blocks.joined(separator: "\n\n"))
     }
 
     func inline(_ translation: CalcTranslation) -> String {
@@ -70,7 +154,7 @@ struct CalcRenderer {
             blocks.append("\(definition.name) = \(inline(definition.expression))")
         }
         blocks.append(inline(translation.root))
-        return blocks.joined(separator: "\n")
+        return transcribe(blocks.joined(separator: "\n"))
     }
 
     // MARK: Expressions

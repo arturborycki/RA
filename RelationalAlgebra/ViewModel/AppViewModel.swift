@@ -67,7 +67,7 @@ final class AppViewModel: ObservableObject {
     }
 
     /// The tree for the visual canvas.
-    var tree: RATreeNode? {
+    var tree: DiagramNode? {
         translation?.finalExpression.tree
     }
 

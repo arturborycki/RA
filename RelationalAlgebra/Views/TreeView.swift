@@ -10,12 +10,15 @@
 import SwiftUI
 
 struct TreeView: View {
-    @EnvironmentObject private var viewModel: AppViewModel
+    /// The tree to draw — an algebra operator tree or a calculus scope tree;
+    /// `DiagramNode` carries no notation-specific structure, so one view serves
+    /// both.
+    let root: DiagramNode?
     @State private var zoom: CGFloat = 1.0
     @GestureState private var pinch: CGFloat = 1.0
 
     var body: some View {
-        if let root = viewModel.tree {
+        if let root {
             let layout = TreeLayout(root: root)
             ScrollView([.horizontal, .vertical]) {
                 ZStack(alignment: .topLeading) {
@@ -92,7 +95,7 @@ struct EdgeCanvas: View {
 /// A single node in the tree — either an operator (glyph + subscript) or a base
 /// relation (rounded rectangle with the table name).
 struct NodeBubble: View {
-    let node: RATreeNode
+    let node: DiagramNode
 
     var body: some View {
         if node.isLeaf {

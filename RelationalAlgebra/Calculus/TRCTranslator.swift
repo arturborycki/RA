@@ -243,6 +243,9 @@ final class TRCBuilder {
     // MARK: SELECT
 
     private func buildSelect(_ stmt: SelectStatement, outer: TupleScope) -> CalcQuery {
+        if isGrouped(stmt) {
+            return buildGroupedSelect(stmt, outer: outer)
+        }
         var scope = TupleScope(nestedIn: outer)
         var conjuncts: [CalcFormula] = []
         let renderer = CalcRenderer()
@@ -318,6 +321,256 @@ final class TRCBuilder {
         }
 
         return query
+    }
+
+    /// Whether the query aggregates: an explicit GROUP BY, or an aggregate in
+    /// the SELECT list or HAVING, either of which collapses rows into groups.
+    private func isGrouped(_ stmt: SelectStatement) -> Bool {
+        !stmt.groupBy.isEmpty
+            || stmt.projections.contains { $0.isAggregate }
+            || stmt.having?.containsAggregate == true
+    }
+
+    // MARK: - Grouping and aggregation
+
+    /// Aggregation has no first-order expression, so this uses the documented
+    /// extension: a result variable bound to an aggregate over a set
+    /// comprehension, with the grouping columns tying each comprehension to its
+    /// own group.
+    ///
+    ///     { ⟨d, h⟩ | ∃u ( Employee(u) ∧ u.dept_id = d )
+    ///                ∧ h = COUNT{ u | Employee(u) ∧ u.dept_id = d }
+    ///                ∧ h > 5 }
+    ///
+    /// The comprehension is where WHERE lands and the outer formula is where
+    /// HAVING lands — which is exactly the difference between the two clauses.
+    private func buildGroupedSelect(_ stmt: SelectStatement, outer: TupleScope) -> CalcQuery {
+        let source = buildSourceBlock(stmt, outer: outer)
+        let renderer = CalcRenderer()
+
+        diagnostics.append(.extended(
+            "GROUP BY / aggregates",
+            "First-order relational calculus has no aggregation. This uses the usual extension — " +
+            "an aggregate over a set comprehension — with one comprehension per group."))
+
+        emitStep(title: "Range variables", clause: "FROM",
+                 explanation: rangeVariableExplanation(source.scope.localVariables,
+                                                       commaJoined: stmt.from.count > 1) +
+                              " These become the comprehension's own variables below.",
+                 expression: snapshot(source.conjuncts, result: []),
+                 added: source.conjuncts.map { renderer.inline($0) }.joined(separator: "  "))
+
+        // One fresh result variable per grouping column, tying the group's
+        // identity to the comprehensions that describe it.
+        let groupingTerms = stmt.groupBy.map { term($0, scope: source.scope) }
+        let groupingVars = groupingTerms.map {
+            allocate(preferred: mnemonic(for: $0), relation: nil)
+        }
+        let groupEqualities: [CalcFormula] = zip(groupingTerms, groupingVars).map {
+            .comparison(lhs: $0, op: "=", rhs: .variable($1))
+        }
+        let membership = CalcFormula.conjunction(source.conjuncts + groupEqualities)
+
+        var conjuncts: [CalcFormula] = []
+        // A group exists when some tuple falls in it. With no GROUP BY there is
+        // exactly one group — the whole relation — and nothing to enumerate.
+        if !groupingVars.isEmpty {
+            conjuncts.append(.exists(source.scope.localVariables, membership))
+            emitStep(title: "Group identity", clause: "GROUP BY",
+                     explanation: "Each grouping column becomes a result variable, and a group " +
+                                  "exists exactly when some tuple falls in it.",
+                     expression: snapshot(conjuncts, result: []),
+                     added: groupEqualities.map { renderer.inline($0) }.joined(separator: "  "))
+        }
+
+        // Each distinct aggregate gets a result variable bound to its own
+        // comprehension over the same source.
+        var bindings: [String: CalcVar] = [:]
+        var result: [ResultColumn] = []
+
+        for item in stmt.projections {
+            guard case let .expression(expr, alias) = item else {
+                result.append(ResultColumn(term: .opaque(item.attributeLabel)))
+                continue
+            }
+            if expr.containsAggregate {
+                let variable = bindAggregate(expr, alias: alias, source: source,
+                                             membership: membership,
+                                             conjuncts: &conjuncts, bindings: &bindings)
+                result.append(ResultColumn(term: .variable(variable), name: alias))
+                continue
+            }
+            // A grouping column projects the variable that stands for it.
+            let projected = term(expr, scope: source.scope)
+            if let index = groupingTerms.firstIndex(of: projected) {
+                result.append(ResultColumn(term: .variable(groupingVars[index]), name: alias))
+            } else {
+                diagnostics.append(.annotated(
+                    projected.plainText,
+                    "'\(projected.plainText)' is neither grouped nor aggregated, so it has no " +
+                    "single value within a group."))
+                result.append(ResultColumn(term: projected, name: alias))
+            }
+        }
+
+        if !bindings.isEmpty {
+            emitStep(title: "Aggregates", clause: "SELECT",
+                     explanation: "Each aggregate becomes a result variable bound to a comprehension " +
+                                  "over the group. WHERE is inside the comprehension; HAVING will " +
+                                  "conjoin outside it.",
+                     expression: snapshot(conjuncts, result: result),
+                     added: conjuncts.compactMap { conjunct -> String? in
+                         if case .comparison = conjunct { return renderer.inline(conjunct) }
+                         return nil
+                     }.joined(separator: "  "))
+        }
+
+        // HAVING filters groups, so it conjoins outside every comprehension —
+        // referring to the aggregate variables rather than recomputing them.
+        if let having = stmt.having {
+            let condition = havingFormula(having, source: source, membership: membership,
+                                          conjuncts: &conjuncts, bindings: &bindings)
+            conjuncts.append(condition)
+            emitStep(title: "Group selection", clause: "HAVING",
+                     explanation: "HAVING conjoins onto the outer formula, filtering whole groups. " +
+                                  "That it lands here and WHERE lands inside the comprehension is " +
+                                  "the whole difference between the two clauses.",
+                     expression: snapshot(conjuncts, result: result),
+                     added: renderer.inline(condition))
+        }
+
+        let extensions = self.extensions(stmt, includeGrouping: false)
+        noteSortAndLimit(stmt)
+
+        return CalcQuery(dialect: .trc, result: result,
+                         formula: CalcFormula.conjunction(conjuncts),
+                         resultStyle: .tuple, extensions: extensions)
+    }
+
+    /// Bind one aggregate to a result variable, reusing the binding when the
+    /// same aggregate appears twice (in the SELECT list and again in HAVING).
+    private func bindAggregate(_ expr: Expression, alias: String?,
+                               source: SourceBlock, membership: CalcFormula,
+                               conjuncts: inout [CalcFormula],
+                               bindings: inout [String: CalcVar]) -> CalcVar {
+        let key = expr.rendered
+        if let existing = bindings[key] { return existing }
+
+        let spec = aggregateSpec(expr, source: source, membership: membership)
+        let variable = allocate(preferred: alias ?? shortName(for: spec.function), relation: nil)
+        bindings[key] = variable
+        conjuncts.append(.comparison(lhs: .variable(variable), op: "=", rhs: .aggregate(spec)))
+        return variable
+    }
+
+    private func aggregateSpec(_ expr: Expression, source: SourceBlock,
+                               membership: CalcFormula) -> AggregateSpec {
+        guard case let .function(name, args, distinct) = expr else {
+            // An aggregate wrapped in arithmetic — kept whole rather than split,
+            // since splitting it would change what is being averaged.
+            return AggregateSpec(function: expr.rendered, distinct: false, element: nil,
+                                 variables: source.scope.localVariables, condition: membership)
+        }
+        // COUNT(*) counts tuples; every other aggregate collects a value.
+        let element: CalcTerm?
+        if args.count == 1, case .star = args[0] {
+            element = nil
+        } else {
+            element = args.first.map { term($0, scope: source.scope) }
+        }
+        return AggregateSpec(function: name.uppercased(), distinct: distinct, element: element,
+                             variables: source.scope.localVariables, condition: membership)
+    }
+
+    /// Translate HAVING, replacing each aggregate with the variable already
+    /// bound to it (or binding a new one).
+    private func havingFormula(_ expr: Expression, source: SourceBlock, membership: CalcFormula,
+                               conjuncts: inout [CalcFormula],
+                               bindings: inout [String: CalcVar]) -> CalcFormula {
+        switch expr {
+        case let .binary(op, lhs, rhs):
+            let keyword = op.uppercased()
+            if keyword == "AND" {
+                return .conjunction([havingFormula(lhs, source: source, membership: membership,
+                                                   conjuncts: &conjuncts, bindings: &bindings),
+                                     havingFormula(rhs, source: source, membership: membership,
+                                                   conjuncts: &conjuncts, bindings: &bindings)])
+            }
+            if keyword == "OR" {
+                return .disjunction([havingFormula(lhs, source: source, membership: membership,
+                                                   conjuncts: &conjuncts, bindings: &bindings),
+                                     havingFormula(rhs, source: source, membership: membership,
+                                                   conjuncts: &conjuncts, bindings: &bindings)])
+            }
+            if TRCBuilder.comparisonOperators.contains(op) {
+                return .comparison(
+                    lhs: havingTerm(lhs, source: source, membership: membership,
+                                    conjuncts: &conjuncts, bindings: &bindings),
+                    op: TRCBuilder.canonical(op),
+                    rhs: havingTerm(rhs, source: source, membership: membership,
+                                    conjuncts: &conjuncts, bindings: &bindings))
+            }
+            return .predicate(rendered: expr.rendered, terms: [])
+
+        case let .paren(inner):
+            return havingFormula(inner, source: source, membership: membership,
+                                 conjuncts: &conjuncts, bindings: &bindings)
+        case let .unary(op, operand) where op.uppercased() == "NOT":
+            return .not(havingFormula(operand, source: source, membership: membership,
+                                      conjuncts: &conjuncts, bindings: &bindings))
+        default:
+            return formula(expr, scope: source.scope)
+        }
+    }
+
+    private func havingTerm(_ expr: Expression, source: SourceBlock, membership: CalcFormula,
+                            conjuncts: inout [CalcFormula],
+                            bindings: inout [String: CalcVar]) -> CalcTerm {
+        guard expr.containsAggregate else { return term(expr, scope: source.scope) }
+        return .variable(bindAggregate(expr, alias: nil, source: source, membership: membership,
+                                       conjuncts: &conjuncts, bindings: &bindings))
+    }
+
+    /// A one-letter stand-in taken from the column being grouped on:
+    /// `dept_id` → `d`. Long enough to recognise, short enough to read.
+    private func mnemonic(for term: CalcTerm) -> String {
+        guard let name = outputName(of: term) else { return "g" }
+        let letters = name.lowercased().filter { $0.isLetter }
+        return letters.isEmpty ? "g" : String(letters.first!)
+    }
+
+    private func shortName(for function: String) -> String {
+        switch function.uppercased() {
+        case "COUNT": return "c"
+        case "SUM":   return "s"
+        case "AVG":   return "a"
+        case "MIN":   return "mn"
+        case "MAX":   return "mx"
+        default:      return "v"
+        }
+    }
+
+    // MARK: - The FROM / JOIN / WHERE block both paths share
+
+    struct SourceBlock {
+        var scope: TupleScope
+        var conjuncts: [CalcFormula]
+    }
+
+    private func buildSourceBlock(_ stmt: SelectStatement, outer: TupleScope) -> SourceBlock {
+        var scope = TupleScope(nestedIn: outer)
+        var conjuncts: [CalcFormula] = []
+        for table in stmt.from {
+            conjuncts.append(atom(for: table, into: &scope))
+        }
+        for join in stmt.joins {
+            conjuncts.append(atom(for: join.table, into: &scope))
+            conjuncts.append(contentsOf: joinConditions(join, scope: scope))
+        }
+        if let whereClause = stmt.whereClause {
+            conjuncts.append(formula(whereClause, scope: scope))
+        }
+        return SourceBlock(scope: scope, conjuncts: conjuncts)
     }
 
     private func rangeVariableExplanation(_ variables: [CalcVar], commaJoined: Bool) -> String {
@@ -464,16 +717,19 @@ final class TRCBuilder {
 
     // MARK: Extensions and fidelity
 
-    private func extensions(_ stmt: SelectStatement) -> [CalcExtension] {
+    private func extensions(_ stmt: SelectStatement,
+                            includeGrouping: Bool = true) -> [CalcExtension] {
         var result: [CalcExtension] = []
 
         let grouping = stmt.groupBy.map { $0.rendered }
-        if !grouping.isEmpty {
+        // A GROUPING SETS / ROLLUP / CUBE modifier produces several groupings at
+        // once, which one set of grouping variables cannot express.
+        if !grouping.isEmpty, includeGrouping || stmt.groupByModifier != nil {
             let rendered = stmt.groupByModifier.map { "\($0)(\(grouping.joined(separator: ", ")))" }
                 ?? grouping.joined(separator: ", ")
             result.append(CalcExtension(kind: .grouping, rendered: "group by \(rendered)"))
         }
-        if let having = stmt.having {
+        if let having = stmt.having, includeGrouping {
             result.append(CalcExtension(kind: .having, rendered: "having \(having.rendered)"))
         }
         if !stmt.orderBy.isEmpty {
@@ -493,11 +749,15 @@ final class TRCBuilder {
                 "No operator needed: a calculus expression denotes a set, so duplicates never " +
                 "arise. The algebra needs δ here; the calculus does not."))
         }
-        if !stmt.groupBy.isEmpty || stmt.projections.contains(where: { $0.isAggregate }) {
-            diagnostics.append(.extended(
-                "GROUP BY / aggregates",
-                "First-order relational calculus has no aggregation. Grouping is shown as an " +
-                "annotation outside the braces rather than faked inside it."))
+        noteSortAndLimit(stmt)
+    }
+
+    private func noteSortAndLimit(_ stmt: SelectStatement) {
+        if let modifier = stmt.groupByModifier {
+            diagnostics.append(.annotated(
+                "GROUP BY \(modifier)",
+                "\(modifier) produces several groupings at once, which one set of grouping " +
+                "variables cannot express; shown as an annotation instead."))
         }
         if !stmt.orderBy.isEmpty {
             diagnostics.append(.annotated(
@@ -591,6 +851,7 @@ final class TRCBuilder {
         case let .variable(v):           return [v]
         case let .attribute(v, _):       return [v]
         case .literal, .opaque:          return []
+        case let .aggregate(spec):       return spec.freeVariables.map { $0 }.sorted { $0.name < $1.name }
         case let .application(_, args, _): return args.flatMap { orderedTermVariables($0) }
         case let .binaryOp(_, lhs, rhs): return orderedTermVariables(lhs) + orderedTermVariables(rhs)
         }

@@ -74,12 +74,8 @@ struct PrettyFormulaCard: View {
                 Label("Relational algebra expression", systemImage: "function")
                     .font(.headline)
                 Spacer()
-                Button {
-                    UIPasteboard.general.string = pretty
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                }
-                .buttonStyle(.borderless)
+                ExportMenu(exports: [("Unicode", expression.formula),
+                                     ("LaTeX", expression.latex)])
             }
 
             ScrollView(.horizontal, showsIndicators: true) {

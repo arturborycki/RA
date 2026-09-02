@@ -16,6 +16,7 @@ enum Notation: String, CaseIterable, Identifiable {
     case ra = "RA"
     case trc = "TRC"
     case drc = "DRC"
+    case compare = "Compare"
 
     var id: String { rawValue }
 
@@ -26,14 +27,26 @@ enum Notation: String, CaseIterable, Identifiable {
         case .ra:  return "Relational Algebra"
         case .trc: return "Tuple Relational Calculus"
         case .drc: return "Domain Relational Calculus"
+        case .compare: return "All Three Notations"
         }
     }
 
-    /// The views this notation can currently show, in display order.
+    /// The views this notation can currently show, in display order. The third
+    /// slot is notation-dependent: an operator tree for the algebra, a
+    /// quantifier-scope tree for the calculus.
     var availableTabs: [ResultTab] {
         switch self {
-        case .ra:            return ResultTab.allCases
-        case .trc, .drc:     return [.steps, .formula]
+        case .ra:        return ResultTab.allCases
+        case .trc, .drc: return [.steps, .formula, .diagram]
+        case .compare:   return []
+        }
+    }
+
+    /// What the third tab is called here.
+    var diagramLabel: String {
+        switch self {
+        case .ra:  return "Diagram"
+        default:   return "Structure"
         }
     }
 }

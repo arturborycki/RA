@@ -106,6 +106,13 @@ struct SafetyChecker {
             // The antecedent of a guarded ∀ restricts the variables it names.
             return rangeRestricted(antecedent)
 
+        case let .comparison(lhs, op, rhs) where op == "=":
+            // A lone equality is still a restriction when one side is ground:
+            // `{ ⟨c⟩ | c = COUNT{ … } }` denotes one value.
+            var restricted = Set<CalcVar>()
+            propagate([(lhs, rhs)], into: &restricted)
+            return restricted
+
         case .forAll, .not, .comparison, .predicate, .constant:
             // Negation does not restrict: `{ t | ¬R(t) }` is the classic unsafe
             // expression. Nor does a comparison: `{ x | x > 5 }` is unbounded.
@@ -128,6 +135,11 @@ struct SafetyChecker {
     }
 
     /// Carry restrictions across equalities until nothing new is restricted.
+    ///
+    /// A *ground* side — a constant, or an aggregate whose own free variables
+    /// are already restricted — restricts the other side too: `{ ⟨x⟩ | x = 5 }`
+    /// denotes one value, not the whole domain. That is the standard rule, and
+    /// it is what keeps `h = COUNT{ … }` from reading as unsafe.
     private static func propagate(_ equalities: [(CalcTerm, CalcTerm)],
                                   into restricted: inout Set<CalcVar>) {
         guard !equalities.isEmpty else { return }
@@ -136,11 +148,11 @@ struct SafetyChecker {
             changed = false
             for (lhs, rhs) in equalities {
                 let left = lhs.variables, right = rhs.variables
-                if !right.isEmpty, right.isSubset(of: restricted), !left.isSubset(of: restricted) {
+                if right.isSubset(of: restricted), !left.isEmpty, !left.isSubset(of: restricted) {
                     restricted.formUnion(left)
                     changed = true
                 }
-                if !left.isEmpty, left.isSubset(of: restricted), !right.isSubset(of: restricted) {
+                if left.isSubset(of: restricted), !right.isEmpty, !right.isSubset(of: restricted) {
                     restricted.formUnion(right)
                     changed = true
                 }

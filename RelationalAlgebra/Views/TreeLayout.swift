@@ -12,7 +12,7 @@ import CoreGraphics
 
 struct PositionedNode: Identifiable {
     let id: UUID
-    let node: RATreeNode
+    let node: DiagramNode
     var center: CGPoint
 }
 
@@ -34,13 +34,13 @@ struct TreeLayout {
     /// Outer padding around the whole diagram.
     static let padding: CGFloat = 60
 
-    init(root: RATreeNode) {
+    init(root: DiagramNode) {
         var nextLeafX: CGFloat = TreeLayout.padding
         var maxDepth = 0
 
         // Recursively assign centres. Returns this node's centre x.
         @discardableResult
-        func place(_ node: RATreeNode, depth: Int) -> CGFloat {
+        func place(_ node: DiagramNode, depth: Int) -> CGFloat {
             maxDepth = max(maxDepth, depth)
             let y = TreeLayout.padding + CGFloat(depth) * TreeLayout.vGap
 

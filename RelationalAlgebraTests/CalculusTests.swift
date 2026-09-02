@@ -804,6 +804,142 @@ final class CalculusTests: XCTestCase {
         XCTAssertTrue(translation.simplifications.isEmpty)
     }
 
+    // MARK: - Aggregation (an extension, not pure calculus)
+
+    func testAggregateBecomesAComprehensionOverTheGroup() throws {
+        let text = try inline("""
+            SELECT dept_id, COUNT(*) AS headcount FROM Employee GROUP BY dept_id
+            """)
+        XCTAssertEqual(text,
+            "{ ⟨d, headcount⟩ | ∃e ( Employee(e) ∧ e.dept_id = d ) " +
+            "∧ headcount = COUNT{ e | Employee(e) ∧ e.dept_id = d } }")
+    }
+
+    func testAggregateOverAValueCollectsThatValue() throws {
+        let text = try inline("SELECT dept_id, AVG(salary) FROM Employee GROUP BY dept_id")
+        XCTAssertTrue(text.contains("AVG{ e.salary |"), text)
+    }
+
+    func testWhereGoesInsideTheComprehensionAndHavingOutside() throws {
+        let text = try inline("""
+            SELECT dept_id, COUNT(*) FROM Employee
+            WHERE salary > 100 GROUP BY dept_id HAVING COUNT(*) > 5
+            """)
+        // The filter on rows is inside the comprehension…
+        XCTAssertTrue(text.contains("e.salary > 100 ∧ e.dept_id = d }"), text)
+        // …and the filter on groups is outside it.
+        XCTAssertTrue(text.hasSuffix("∧ c > 5 }"), text)
+    }
+
+    func testTheSameAggregateIsBoundOnce() throws {
+        // COUNT(*) appears in both the SELECT list and HAVING.
+        let text = try inline("""
+            SELECT dept_id, COUNT(*) AS n FROM Employee GROUP BY dept_id HAVING COUNT(*) > 5
+            """)
+        XCTAssertEqual(text.components(separatedBy: "COUNT{").count - 1, 1, text)
+        XCTAssertTrue(text.contains("n > 5"), text)
+    }
+
+    func testAggregateWithoutGroupByHasNoGroupEnumeration() throws {
+        let text = try inline("SELECT COUNT(*) FROM Employee")
+        // One group — the whole relation — so nothing to enumerate.
+        XCTAssertEqual(text, "{ ⟨c⟩ | c = COUNT{ e | Employee(e) } }")
+    }
+
+    func testAggregationIsLabelledAsAnExtension() throws {
+        let translation = try translate("SELECT dept_id, COUNT(*) FROM Employee GROUP BY dept_id")
+        XCTAssertTrue(translation.diagnostics.contains {
+            $0.construct == "GROUP BY / aggregates" && $0.fidelity == .extended
+        })
+        // And it is no longer pushed outside the braces.
+        let query = try onlyQuery(translation)
+        XCTAssertFalse(query.extensions.contains { $0.kind == .grouping })
+    }
+
+    func testGroupingModifierStaysAnnotated() throws {
+        // ROLLUP produces several groupings at once, which one set of grouping
+        // variables cannot express.
+        let translation = try translate("SELECT a, COUNT(*) FROM T GROUP BY ROLLUP(a)")
+        XCTAssertTrue(translation.diagnostics.contains { $0.fidelity == .annotated })
+    }
+
+    func testAggregateQueriesAreStillSafe() throws {
+        for sql in ["SELECT dept_id, COUNT(*) FROM Employee GROUP BY dept_id",
+                    "SELECT COUNT(*) FROM Employee",
+                    "SELECT d, SUM(x) FROM T GROUP BY d HAVING SUM(x) > 1"] {
+            XCTAssertTrue(SafetyChecker.check(try translate(sql)).isEmpty, sql)
+        }
+    }
+
+    // MARK: - Export styles
+
+    func testAsciiStyleSpellsTheGlyphsOut() throws {
+        let translation = try translate("SELECT e.name FROM Employee e WHERE e.salary > 1")
+        let text = CalcRenderer(style: .ascii).inline(translation)
+        XCTAssertFalse(text.contains("∧"), text)
+        XCTAssertTrue(text.contains("AND"), text)
+    }
+
+    func testLatexStyleEmitsCommandsAndEscapesUnderscores() throws {
+        let translation = try translate("""
+            SELECT e.name FROM Employee e JOIN Department d ON e.dept_id = d.id
+            """)
+        let text = CalcRenderer(style: .latex).inline(translation)
+        XCTAssertTrue(text.contains("\\wedge"), text)
+        XCTAssertTrue(text.contains("\\mid"), text)
+        // `dept_id` would be a subscript unescaped.
+        XCTAssertTrue(text.contains("dept\\_id"), text)
+        XCTAssertFalse(text.contains("∧"), text)
+    }
+
+    func testUnicodeStyleIsUnchanged() throws {
+        let translation = try translate("SELECT a FROM T WHERE a > 1")
+        XCTAssertEqual(CalcRenderer(style: .unicode).inline(translation),
+                       CalcRenderer().inline(translation))
+    }
+
+    func testAlgebraLatexUsesStandardOperatorCommands() throws {
+        let query = try SQLParser.parse("SELECT name FROM Employee WHERE dept_id > 1")
+        let latex = RATranslator().translate(query).finalExpression.latex
+        XCTAssertTrue(latex.contains("\\pi_"), latex)
+        XCTAssertTrue(latex.contains("\\sigma_"), latex)
+        XCTAssertTrue(latex.contains("dept\\_id"), latex)
+    }
+
+    // MARK: - Scope tree
+
+    func testScopeTreeShowsQuantifiersAsNodes() throws {
+        let translation = try translate("""
+            SELECT c.name FROM Customer c
+            WHERE NOT EXISTS (SELECT o.id FROM Orders o WHERE o.cid = c.id)
+            """)
+        let tree = translation.root.scopeTree
+        XCTAssertEqual(tree.symbol, "{ … | … }")
+        XCTAssertTrue(contains(tree, symbol: CalcSymbol.exists))
+        XCTAssertTrue(contains(tree, symbol: CalcSymbol.not))
+        XCTAssertTrue(contains(tree, symbol: "Customer(c)"))
+    }
+
+    func testScopeTreeNamesTheVariablesEachQuantifierBinds() throws {
+        let translation = try translate("""
+            SELECT e.name FROM Employee e JOIN Department d ON e.dept_id = d.id
+            """)
+        let tree = translation.root.scopeTree
+        XCTAssertTrue(node(tree, symbol: CalcSymbol.exists)?.detail == "d")
+    }
+
+    private func contains(_ node: DiagramNode, symbol: String) -> Bool {
+        self.node(node, symbol: symbol) != nil
+    }
+
+    private func node(_ node: DiagramNode, symbol: String) -> DiagramNode? {
+        if node.symbol == symbol { return node }
+        for child in node.children {
+            if let found = self.node(child, symbol: symbol) { return found }
+        }
+        return nil
+    }
+
     func testResultVariablesAreNeverSubstitutedAway() throws {
         // `a` is exported, so unification must keep it rather than the bound name.
         let text = try drcSimplified("""

@@ -44,7 +44,15 @@ Plus a pannable / zoomable tree diagram of the same expression.
 ## Three notations
 
 A **notation** picker switches the results pane between relational algebra,
-**tuple relational calculus** and **domain relational calculus**.
+**tuple relational calculus**, **domain relational calculus** — and **Compare**,
+which stacks all three for the same query. On an iPad in landscape that last one
+is the whole point of the app: the same query, three notations, visible at once.
+
+Each calculus notation offers **Steps** (the construction sequence), **Formula**
+(the finished expression) and **Structure** — a quantifier-scope tree showing
+which quantifier binds which variable and how deep the negations nest, which is
+the part of a formula hardest to read off one line. It reuses the same layout
+engine as the algebra's operator tree.
 
 ### Relational algebra — three views
 
@@ -55,12 +63,11 @@ A **notation** picker switches the results pane between relational algebra,
 - **Diagram** — the expression drawn as an operator tree (pinch to zoom, drag to
   pan).
 
-### Tuple relational calculus — two views
+### Tuple relational calculus
 
-- **Steps** — the construction sequence. Unlike the algebra's chain of named
-  intermediate relations, this builds *one* formula: each card shows the whole
-  expression as it stands and calls out what that step added.
-- **Formula** — the finished expression, line-broken so it stays readable.
+The construction sequence builds *one* formula rather than the algebra's chain
+of named intermediate relations; each step card shows the whole expression as it
+stands and calls out what that step added.
 
 ```
 { e.name | Employee(e) ∧ ∃d ( Department(d) ∧ e.dept_id = d.id ∧ d.location = 'Berlin' ) }
@@ -159,6 +166,32 @@ every":
 
 The Formula view shows the simplified form with a toggle back to the direct
 translation.
+
+#### Aggregation
+
+First-order relational calculus has no aggregation at all, so `GROUP BY` uses the
+usual documented **extension** — an aggregate over a set comprehension, one per
+group:
+
+```sql
+SELECT dept_id, COUNT(*) AS headcount
+FROM Employee GROUP BY dept_id HAVING COUNT(*) > 5;
+```
+```
+{ ⟨d, headcount⟩ | ∃e ( Employee(e) ∧ e.dept_id = d )
+                   ∧ headcount = COUNT{ e | Employee(e) ∧ e.dept_id = d }
+                   ∧ headcount > 5 }
+```
+
+Note where the two filtering clauses land: `WHERE` goes *inside* the
+comprehension (it selects rows), `HAVING` *outside* it (it selects groups). That
+is the whole difference between them, and the notation shows it.
+
+#### Export
+
+Every formula copies as Unicode, plain text (`EXISTS`, `AND`, `->`) or **LaTeX**
+— the last being the one worth having, since the audience is students writing an
+answer up. The algebra exports LaTeX too (`\sigma`, `\pi`, `\bowtie`).
 
 #### Safety
 
@@ -293,9 +326,9 @@ serve both.
 | **Models** | `Models/SQLAST.swift`, `Models/RANode.swift`, `Models/CalcIR.swift`, `Models/Schema.swift`, `Models/CalcDiagnostic.swift` |
 | **Parser** | `Parser/Token.swift`, `Parser/Lexer.swift`, `Parser/SQLParser.swift` |
 | **Translator** | `Translator/RATranslator.swift`, `RAStep.swift`, `ExpressionRendering.swift` |
-| **Calculus** | `Calculus/SchemaInference.swift`, `TRCTranslator.swift`, `DRCLowering.swift`, `CalcSimplifier.swift`, `SafetyChecker.swift`, `CalcRenderer.swift`, `CalcStep.swift`, `CalcTranslation.swift` |
+| **Calculus** | `Calculus/SchemaInference.swift`, `TRCTranslator.swift`, `DRCLowering.swift`, `CalcSimplifier.swift`, `SafetyChecker.swift`, `CalcRenderer.swift`, `ScopeTree.swift`, `CalcStep.swift`, `CalcTranslation.swift` |
 | **View model** | `ViewModel/AppViewModel.swift`, `ViewModel/SampleQueries.swift` |
-| **UI** | `App/…`, `Views/…` (editor, steps, formula, tree, calculus, banner) |
+| **UI** | `App/…`, `Views/…` (editor, steps, formula, tree, calculus, compare, schema, banner) |
 
 The lexer + parser + translator are **pure Swift with no UIKit/SwiftUI
 dependency**, which keeps them fully unit-testable (see `RelationalAlgebraTests`).
@@ -328,6 +361,14 @@ structural invariants checked across every bundled sample — every quantified
 variable is used in its body, every formula passes the safety checker, and
 simplification is both idempotent and safety-preserving.
 
+`CalculusEquivalenceTests` goes further and *evaluates*. A small tableau
+evaluator runs each formula against a toy three-relation database, and asserts
+that the domain lowering answers exactly what the tuple form answers, and that
+simplification never changes what a formula denotes. Every other test checks the
+text of a formula, which catches a translation that changed but not one that was
+always wrong; this one can catch a formula that is well-formed, safe, renders
+beautifully and means something else.
+
 ## Notes & limitations
 
 - The translator models SQL's **logical** operator order for teaching purposes;
@@ -336,9 +377,14 @@ simplification is both idempotent and safety-preserving.
   inside a formula, so it is kept as an opaque atom and the reason is reported.
 - `¬∃x ( R(x) ∧ ¬φ )` is not yet rewritten to the equivalent `∀x ( R(x) → φ )`;
   that rewrite belongs to the simplifier, alongside equality unification.
-- Aggregation still has no calculus notation of its own: `GROUP BY` and the
-  aggregate functions are annotated outside the braces rather than expressed.
-  See [`docs/DESIGN-CALCULUS.md`](docs/DESIGN-CALCULUS.md).
+- Aggregation is an **extension** to the calculus, not part of it — it is
+  labelled as one everywhere it appears. `GROUP BY ROLLUP` / `CUBE` /
+  `GROUPING SETS` produce several groupings at once, which one set of grouping
+  variables cannot express, so those stay annotated outside the braces.
+- The equivalence tests do not cover the algebra: `RANode` stores its selection
+  conditions as pre-rendered strings, so evaluating it would mean writing a
+  second expression parser. See
+  [`docs/DESIGN-CALCULUS.md`](docs/DESIGN-CALCULUS.md).
 - `ORDER BY` (τ) and duplicate handling are the usual pragmatic extensions to
   the pure (set-based) relational algebra.
 - Only the `SELECT` surface is parsed; DML/DDL is out of scope.

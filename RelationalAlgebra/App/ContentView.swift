@@ -83,6 +83,9 @@ struct ResultsView: View {
         tabs.contains(selectedTab) ? selectedTab : (tabs.first ?? .formula)
     }
 
+    /// Compare mode shows every notation at once, so it has no view axis.
+    private var showsViewPicker: Bool { tabs.count > 1 }
+
     var body: some View {
         // GeometryReader resolves to the detail area's *actual* finite size.
         // Hard-constraining the stack to that height gives the inner scroll
@@ -92,10 +95,11 @@ struct ResultsView: View {
                 VStack(spacing: 10) {
                     NotationPicker(notation: $notation)
 
-                    if tabs.count > 1 {
+                    if showsViewPicker {
                         Picker("View", selection: $selectedTab) {
                             ForEach(tabs) { tab in
-                                Label(tab.rawValue, systemImage: tab.systemImage).tag(tab)
+                                Label(tab == .diagram ? notation.diagramLabel : tab.rawValue,
+                                      systemImage: tab.systemImage).tag(tab)
                             }
                         }
                         .pickerStyle(.segmented)
@@ -126,12 +130,16 @@ struct ResultsView: View {
             switch activeTab {
             case .steps:   StepsView()
             case .formula: FormulaView()
-            case .diagram: TreeView()
+            case .diagram: TreeView(root: viewModel.tree)
             }
+        case .compare:
+            CompareView()
+
         case .trc, .drc:
             if let translation = viewModel.calculus(notation) {
                 switch activeTab {
                 case .steps:   CalculusStepsView(translation: translation)
+                case .diagram: TreeView(root: translation.simplified.scopeTree)
                 default:       CalculusFormulaView(translation: translation)
                 }
             } else {
