@@ -26,7 +26,8 @@ enum ResultTab: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @EnvironmentObject private var viewModel: AppViewModel
     @AppStorage("appTheme") private var appTheme: AppTheme = .system
-    @State private var selectedTab: ResultTab = .steps
+    @AppStorage("notation") private var notation: Notation = .ra
+    @AppStorage("resultTab") private var selectedTab: ResultTab = .steps
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
@@ -35,8 +36,8 @@ struct ContentView: View {
                 .navigationTitle("SQL")
                 .navigationBarTitleDisplayMode(.inline)
         } detail: {
-            ResultsView(selectedTab: $selectedTab)
-                .navigationTitle("Relational Algebra")
+            ResultsView(notation: $notation, selectedTab: $selectedTab)
+                .navigationTitle(notation.title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -67,10 +68,20 @@ struct ThemePicker: View {
     }
 }
 
-/// The right-hand results pane with a tab picker and error banner.
+/// The right-hand results pane. Two orthogonal pickers: which notation to show,
+/// and which view of it. The view picker is hidden when the selected notation
+/// offers only one, so the chrome grows only as the notations do.
 struct ResultsView: View {
     @EnvironmentObject private var viewModel: AppViewModel
+    @Binding var notation: Notation
     @Binding var selectedTab: ResultTab
+
+    private var tabs: [ResultTab] { notation.availableTabs }
+
+    /// The selected tab, corrected to one this notation can actually show.
+    private var activeTab: ResultTab {
+        tabs.contains(selectedTab) ? selectedTab : (tabs.first ?? .formula)
+    }
 
     var body: some View {
         // GeometryReader resolves to the detail area's *actual* finite size.
@@ -78,12 +89,18 @@ struct ResultsView: View {
         // views a bounded viewport, so they scroll instead of overflowing.
         GeometryReader { geo in
             VStack(spacing: 0) {
-                Picker("View", selection: $selectedTab) {
-                    ForEach(ResultTab.allCases) { tab in
-                        Label(tab.rawValue, systemImage: tab.systemImage).tag(tab)
+                VStack(spacing: 10) {
+                    NotationPicker(notation: $notation)
+
+                    if tabs.count > 1 {
+                        Picker("View", selection: $selectedTab) {
+                            ForEach(tabs) { tab in
+                                Label(tab.rawValue, systemImage: tab.systemImage).tag(tab)
+                            }
+                        }
+                        .pickerStyle(.segmented)
                     }
                 }
-                .pickerStyle(.segmented)
                 .padding()
 
                 if let error = viewModel.errorMessage {
@@ -104,10 +121,15 @@ struct ResultsView: View {
 
     @ViewBuilder
     private var resultContent: some View {
-        switch selectedTab {
-        case .steps:   StepsView()
-        case .formula: FormulaView()
-        case .diagram: TreeView()
+        switch notation {
+        case .ra:
+            switch activeTab {
+            case .steps:   StepsView()
+            case .formula: FormulaView()
+            case .diagram: TreeView()
+            }
+        case .trc:
+            CalculusFormulaView()
         }
     }
 }

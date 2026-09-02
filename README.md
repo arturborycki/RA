@@ -41,7 +41,12 @@ ORDER BY avg_salary DESC;
 
 Plus a pannable / zoomable tree diagram of the same expression.
 
-## Three views
+## Two notations
+
+A **notation** picker switches the results pane between relational algebra and
+**tuple relational calculus**; domain relational calculus follows.
+
+### Relational algebra — three views
 
 - **Steps** — a numbered card for every operator, each with a plain-language
   explanation and the running RA formula (copyable).
@@ -49,6 +54,40 @@ Plus a pannable / zoomable tree diagram of the same expression.
   notation legend.
 - **Diagram** — the expression drawn as an operator tree (pinch to zoom, drag to
   pan).
+
+### Tuple relational calculus
+
+The same query as a set-builder expression, line-broken so it stays readable:
+
+```
+{ e.name | Employee(e) ∧ ∃d ( Department(d) ∧ e.dept_id = d.id ∧ d.location = 'Berlin' ) }
+```
+
+A SQL alias *is* a tuple variable, so `FROM Employee e` becomes `Employee(e)`
+directly; variables the result does not export are existentially quantified over
+just the conjuncts that mention them. `DISTINCT` needs no operator at all — a
+calculus expression denotes a set — where the algebra needs δ.
+
+Alongside the formula the view lists each **relation** the query ranges over,
+with its attributes and where they came from (declared, from a CTE, or inferred
+from the query's own column references).
+
+#### Fidelity
+
+Not all SQL maps onto first-order calculus. Every construct is translated at a
+declared fidelity, and anything that is not **exact** is named in a banner above
+the formula:
+
+| Fidelity | Meaning | Examples |
+|----------|---------|----------|
+| **exact** | Standard notation, no caveats | selection, projection, join, cross product, `DISTINCT` (a no-op) |
+| **extension** | Needs a documented extension to the pure calculus | `GROUP BY` and aggregates, `IS NULL`, `LIKE` |
+| **annotated** | No first-order expression; shown *outside* the braces | `ORDER BY`, `LIMIT`, `UNION ALL`, outer joins |
+
+Nothing is silently approximated: an ambiguous unqualified column is reported
+rather than attributed to a guess, and a relation whose attributes were only
+inferred says so — which is what a domain-calculus atom will need, since `R(x, y, z)`
+is positional.
 
 ## Input methods
 
@@ -124,20 +163,30 @@ SQL text
 [Token]
    │  SQLParser        (Parser/SQLParser.swift)  → SQLQuery AST
    ▼
-SQLQuery
-   │  RATranslator     (Translator/…)            → [RAStep] + RANode
-   ▼
-RANode ──► .formula   (one-line string)
-       └─► .tree      → TreeLayout → SwiftUI canvas
+SQLQuery ─┬─ RATranslator      (Translator/…)    → [RAStep] + RANode
+          │                                         ├─► .formula (one-line string)
+          │                                         └─► .tree    → TreeLayout → canvas
+          │
+          ├─ SchemaInference   (Calculus/…)      → QuerySchema
+          │
+          └─ TRCTranslator     (Calculus/…)      → CalcTranslation
+                                                    └─► CalcRenderer → set-builder text
 ```
+
+The calculus translates from the **SQL AST**, not from `RANode`: by the time RA
+is built, predicates are flattened to strings and sub-queries erased to `(…)`,
+while SQL is very nearly sugar over TRC to begin with. The IR is shared, so
+domain relational calculus lowers from the tuple form rather than needing a
+second translator.
 
 | Layer | Files |
 |-------|-------|
-| **Models** | `Models/SQLAST.swift`, `Models/RANode.swift` |
+| **Models** | `Models/SQLAST.swift`, `Models/RANode.swift`, `Models/CalcIR.swift`, `Models/Schema.swift`, `Models/CalcDiagnostic.swift` |
 | **Parser** | `Parser/Token.swift`, `Parser/Lexer.swift`, `Parser/SQLParser.swift` |
 | **Translator** | `Translator/RATranslator.swift`, `RAStep.swift`, `ExpressionRendering.swift` |
+| **Calculus** | `Calculus/SchemaInference.swift`, `TRCTranslator.swift`, `CalcRenderer.swift`, `CalcTranslation.swift` |
 | **View model** | `ViewModel/AppViewModel.swift`, `ViewModel/SampleQueries.swift` |
-| **UI** | `App/…`, `Views/…` (editor, steps, formula, tree) |
+| **UI** | `App/…`, `Views/…` (editor, steps, formula, tree, calculus, banner) |
 
 The lexer + parser + translator are **pure Swift with no UIKit/SwiftUI
 dependency**, which keeps them fully unit-testable (see `RelationalAlgebraTests`).
@@ -159,14 +208,27 @@ No signing is required for the simulator. For a device, set your team under
 
 ## Tests
 
-`RelationalAlgebraTests` covers the lexer, parser, and translator — token
+`RelationalAlgebraTests` covers the lexer, parser, and both translators — token
 stream shape, clause parsing (joins, grouping, unions), error cases, and that
 each SQL construct produces the expected RA glyph.
+
+`CalculusTests` adds schema inference, the TRC translator and the renderer:
+golden formulas for the core constructs, fidelity assertions (that `DISTINCT` is
+explained rather than dropped, that `ORDER BY` lands outside the braces), and
+structural invariants checked across every bundled sample — every quantified
+variable is used in its body, and every variable is range-restricted by a
+positive relation atom.
 
 ## Notes & limitations
 
 - The translator models SQL's **logical** operator order for teaching purposes;
   it is not a query optimizer and does not push selections down.
+- The calculus back end currently covers select–project–join with `WHERE`
+  exactly. Sub-query predicates (`EXISTS`, `IN (SELECT …)`) are carried as opaque
+  atoms and become ∃ / ∀ quantifiers in the next phase; each one raises a note.
+- Domain relational calculus is not generated yet: its atoms are positional, so
+  it needs `CREATE TABLE` parsing to know each relation's arity and column order.
+  See [`docs/DESIGN-CALCULUS.md`](docs/DESIGN-CALCULUS.md).
 - `ORDER BY` (τ) and duplicate handling are the usual pragmatic extensions to
   the pure (set-based) relational algebra.
 - Only the `SELECT` surface is parsed; DML/DDL is out of scope.
