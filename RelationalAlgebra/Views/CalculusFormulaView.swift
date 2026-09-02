@@ -2,7 +2,7 @@
 //  CalculusFormulaView.swift
 //  RelationalAlgebra
 //
-//  The tuple-relational-calculus expression for the current query, together
+//  The calculus expression for the current query — tuple or domain — together
 //  with the fidelity notes, the relations it ranges over, and a legend for the
 //  logic glyphs.
 //
@@ -11,36 +11,32 @@ import SwiftUI
 import UIKit
 
 struct CalculusFormulaView: View {
-    @EnvironmentObject private var viewModel: AppViewModel
+    let translation: CalcTranslation
 
     var body: some View {
-        if let translation = viewModel.calculus {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    FidelityBanner(diagnostics: translation.diagnostics)
-                    CalculusFormulaCard(translation: translation)
-                    RangeRelationsCard(schema: translation.schema)
-                    legend
-                }
-                .padding()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                FidelityBanner(diagnostics: translation.diagnostics)
+                CalculusFormulaCard(translation: translation)
+                RangeRelationsCard(schema: translation.schema, dialect: translation.dialect)
+                legend
             }
-        } else {
-            EmptyResultView(systemImage: "textformat.abc.dottedunderline",
-                            message: "The relational-calculus expression appears here once the SQL parses.")
+            .padding()
         }
     }
 
     private var legend: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Notation").font(.headline)
-            ForEach(Self.legendEntries, id: \.symbol) { entry in
+            ForEach(entries, id: \.symbol) { entry in
                 HStack(alignment: .firstTextBaseline, spacing: 14) {
                     Text(entry.symbol)
-                        .font(.system(.title3, design: .serif))
-                        .frame(width: 26, alignment: .center)
+                        .font(.system(.subheadline, design: .monospaced))
+                        .frame(width: 74, alignment: .leading)
                         .foregroundStyle(Color.accentColor)
                     Text(entry.meaning)
                         .font(.subheadline)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                 }
             }
@@ -50,40 +46,68 @@ struct CalculusFormulaView: View {
         .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
     }
 
-    static let legendEntries: [(symbol: String, meaning: String)] = [
-        ("{ … | … }", "Set builder — result columns, then the condition they satisfy"),
-        (CalcSymbol.exists, "There exists a tuple such that …"),
-        (CalcSymbol.forAll, "For every tuple …"),
-        (CalcSymbol.and,    "And"),
-        (CalcSymbol.or,     "Or"),
-        (CalcSymbol.not,    "Not"),
-        ("R(t)",            "The tuple variable t ranges over relation R"),
-        ("t.a",             "Attribute a of the tuple t"),
-    ]
+    private var entries: [(symbol: String, meaning: String)] {
+        let shared: [(symbol: String, meaning: String)] = [
+            ("{ … | … }",       "Set builder — the result, then the condition it satisfies"),
+            (CalcSymbol.exists, "There exists … such that"),
+            (CalcSymbol.forAll, "For every …"),
+            (CalcSymbol.and,    "And"),
+            (CalcSymbol.or,     "Or"),
+            (CalcSymbol.not,    "Not"),
+            (CalcSymbol.implies, "Implies — the guard of a safe ∀"),
+        ]
+        switch translation.dialect {
+        case .trc:
+            return shared + [
+                ("R(t)", "The tuple variable t ranges over relation R"),
+                ("t.a",  "Attribute a of the tuple t"),
+            ]
+        case .drc:
+            return shared + [
+                ("R(x, y, z)", "One variable per column, in column order — a domain atom is positional"),
+                ("R(x, y, …)", "The column list is incomplete: declare the table to make it exact"),
+                ("⟨x, y⟩",     "The tuple of values the expression denotes"),
+            ]
+        }
+    }
 }
 
-/// The expression itself, line-broken, in a scrollable monospaced block.
+/// The expression itself, line-broken, with a toggle between the direct
+/// translation and the simplified form when they differ.
 struct CalculusFormulaCard: View {
     let translation: CalcTranslation
+    @State private var showSimplified = true
 
-    private var pretty: String { translation.prettyText() }
+    private var text: String {
+        showSimplified ? translation.simplifiedText() : translation.prettyText()
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label("Tuple relational calculus", systemImage: "function")
+                Label(translation.dialect == .trc ? "Tuple relational calculus"
+                                                  : "Domain relational calculus",
+                      systemImage: "function")
                     .font(.headline)
                 Spacer()
                 Button {
-                    UIPasteboard.general.string = pretty
+                    UIPasteboard.general.string = text
                 } label: {
                     Image(systemName: "doc.on.doc")
                 }
                 .buttonStyle(.borderless)
             }
 
+            if translation.isSimplified {
+                Picker("Form", selection: $showSimplified) {
+                    Text("Simplified").tag(true)
+                    Text("As translated").tag(false)
+                }
+                .pickerStyle(.segmented)
+            }
+
             ScrollView(.horizontal, showsIndicators: true) {
-                Text(pretty)
+                Text(text)
                     .font(.system(.callout, design: .monospaced))
                     .textSelection(.enabled)
                     .lineSpacing(4)
@@ -99,17 +123,20 @@ struct CalculusFormulaCard: View {
 }
 
 /// What the translator worked out about each relation. Attribute order is shown
-/// because it is what a domain-calculus atom will need, and the source badge
-/// says how much to trust it.
+/// because it is exactly what a domain atom's positions are, and the source
+/// badge says how much to trust it.
 struct RangeRelationsCard: View {
     let schema: QuerySchema
+    var dialect: CalcDialect = .trc
 
     private var relations: [RelationSchema] { schema.sortedRelations }
+    private var anyInferred: Bool { relations.contains { !$0.arityKnown } }
 
     var body: some View {
         if !relations.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Relations").font(.headline)
+
                 ForEach(relations, id: \.name) { relation in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 8) {
@@ -128,6 +155,16 @@ struct RangeRelationsCard: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                }
+
+                if dialect == .drc && anyInferred {
+                    Text("A domain atom is positional, so a relation whose columns were " +
+                         "reconstructed from this query cannot be written exactly. Paste its " +
+                         "CREATE TABLE above the query to fix the arity and the order.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
                 }
             }
             .padding()

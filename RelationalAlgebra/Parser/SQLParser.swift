@@ -23,18 +23,86 @@ final class SQLParser {
         self.tokens = tokens
     }
 
-    /// Convenience: lex + parse a source string.
+    /// Convenience: lex + parse a source string down to its query.
     static func parse(_ source: String) throws -> SQLQuery {
+        try parseScript(source).query
+    }
+
+    /// Lex + parse a whole buffer: any number of `CREATE TABLE` statements
+    /// followed by the query they describe. Declaring the tables is what lets
+    /// the domain calculus write a positional atom with a trustworthy arity.
+    static func parseScript(_ source: String) throws -> SQLScript {
         let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw ParseError(message: "Empty query.", position: 0)
         }
         let tokens = try Lexer(trimmed).tokenize()
         let parser = SQLParser(tokens: tokens)
+        let declarations = try parser.parseTableDeclarations()
         let query = try parser.parseQuery()
         parser.consumeOptionalSemicolon()
         try parser.expectEnd()
-        return query
+        return SQLScript(declarations: declarations, query: query)
+    }
+
+    // MARK: - CREATE TABLE
+
+    private func parseTableDeclarations() throws -> [TableDeclaration] {
+        var declarations: [TableDeclaration] = []
+        while checkIdentifierKeyword("CREATE") || checkKeyword("CREATE") {
+            declarations.append(try parseTableDeclaration())
+            consumeOptionalSemicolon()
+        }
+        return declarations
+    }
+
+    private func parseTableDeclaration() throws -> TableDeclaration {
+        _ = advance() // CREATE
+        guard matchIdentifierKeyword("TABLE") || matchKeyword("TABLE") else {
+            throw ParseError(message: "Only CREATE TABLE is supported here.",
+                             position: current.position)
+        }
+        // `IF NOT EXISTS` is noise for our purposes.
+        if matchKeyword("IF") {
+            _ = matchKeyword("NOT")
+            _ = matchKeyword("EXISTS")
+        }
+        let name = try expect(kind: .identifier, "a table name").text
+        _ = try expect(kind: .leftParen, "'(' after the table name")
+
+        var columns: [String] = []
+        repeat {
+            if check(kind: .rightParen) { break }
+            if let column = try parseColumnDefinition() {
+                columns.append(column)
+            }
+        } while consumeCommaIfPresent()
+
+        _ = try expect(kind: .rightParen, "')' closing the column list")
+        return TableDeclaration(name: name, columns: columns)
+    }
+
+    /// One entry in a column list: a column definition, whose name we keep, or
+    /// a table constraint, which names no column of its own. Types, defaults and
+    /// inline constraints are skipped wholesale — only names and order matter.
+    private func parseColumnDefinition() throws -> String? {
+        let isConstraint = ["PRIMARY", "FOREIGN", "UNIQUE", "CHECK", "CONSTRAINT", "KEY", "INDEX"]
+            .contains { checkIdentifierKeyword($0) || checkKeyword($0) }
+        let name = isConstraint ? nil : (check(kind: .identifier) ? advance().text : nil)
+        skipToEndOfColumnEntry()
+        return name
+    }
+
+    /// Advance to the comma or `)` that ends this entry, stepping over nested
+    /// parentheses so that `DECIMAL(10, 2)` and `REFERENCES D(id)` do not end it.
+    private func skipToEndOfColumnEntry() {
+        var depth = 0
+        while !check(kind: .eof) {
+            if depth == 0, check(kind: .comma) || check(kind: .rightParen) { return }
+            if check(kind: .leftParen) { depth += 1 }
+            if check(kind: .rightParen) { depth -= 1 }
+            _ = advance()
+        }
     }
 
     // MARK: - Token cursor

@@ -11,9 +11,9 @@
 //    4. `USING (a, b)`                                → both sides have a and b
 //    5. unqualified references, when exactly one relation is in scope
 //
-//  Declared `CREATE TABLE` DDL — the only fully trustworthy source, and the one
-//  that makes DRC exact rather than approximate — is not parsed yet; it lands
-//  with the DRC phase, at which point it takes precedence over everything here.
+//  A `CREATE TABLE` in the buffer outranks all of it: that is the only source
+//  that gives the complete column list *in order*, which is what a positional
+//  domain-calculus atom needs to be exact rather than approximate.
 //
 //  A reference that cannot be resolved is reported, never guessed: attributing
 //  an ambiguous column to the wrong relation produces a wrong formula.
@@ -28,9 +28,16 @@ struct SchemaInference {
         var diagnostics: [CalcDiagnostic]
     }
 
-    static func infer(_ query: SQLQuery) -> Result {
+    static func infer(_ query: SQLQuery, declarations: [TableDeclaration] = []) -> Result {
         let engine = SchemaInferenceEngine()
         engine.walk(query, scope: Scope())
+        // Declared columns replace anything reconstructed from references: they
+        // are complete and in the right order, which inference cannot promise.
+        for declaration in declarations where !declaration.columns.isEmpty {
+            engine.declare(RelationSchema(name: declaration.name,
+                                          attributes: declaration.columns,
+                                          source: .declared, arityKnown: true))
+        }
         return Result(schema: engine.schema, diagnostics: engine.diagnostics.deduplicated)
     }
 }
@@ -90,6 +97,10 @@ final class SchemaInferenceEngine {
         }
     }
 
+    func declare(_ relation: RelationSchema) {
+        schema.declare(relation)
+    }
+
     private func declareCTE(_ cte: CommonTableExpression) {
         let columns: [String]? = cte.columns.isEmpty ? outputColumns(of: cte.query) : cte.columns
         guard let columns else {
@@ -113,11 +124,13 @@ final class SchemaInferenceEngine {
             }
         }
 
+        var aliases = Set<String>()
         for item in stmt.projections {
             switch item {
             case .star, .qualifiedStar:
                 break // `*` names no new attribute; it enumerates known ones.
-            case let .expression(expr, _):
+            case let .expression(expr, alias):
+                if let alias { aliases.insert(alias.lowercased()) }
                 collect(expr, scope: scope)
             }
         }
@@ -125,7 +138,19 @@ final class SchemaInferenceEngine {
         if let having = stmt.having { collect(having, scope: scope) }
         for join in stmt.joins { if let on = join.on { collect(on, scope: scope) } }
         for expr in stmt.groupBy { collect(expr, scope: scope) }
-        for item in stmt.orderBy { collect(item.expression, scope: scope) }
+        // `ORDER BY avg_salary` usually names a SELECT alias, not a column of
+        // any relation — recording it as one would invent a column that a
+        // domain atom would then reserve a position for.
+        for item in stmt.orderBy where !namesAlias(item.expression, in: aliases) {
+            collect(item.expression, scope: scope)
+        }
+    }
+
+    private func namesAlias(_ expr: Expression, in aliases: Set<String>) -> Bool {
+        if case let .column(qualifier, name) = expr, qualifier == nil {
+            return aliases.contains(name.lowercased())
+        }
+        return false
     }
 
     private func bind(_ table: TableRef, into scope: inout Scope) {

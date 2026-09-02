@@ -10,6 +10,22 @@
 
 import Foundation
 
+/// A `CREATE TABLE` seen in the editor buffer.
+///
+/// Only the column names matter here, and only their *order* really matters:
+/// a domain-calculus atom is positional — `Employee(n, s, d)` — so this is the
+/// one source that makes DRC exact rather than approximate.
+struct TableDeclaration: Equatable {
+    var name: String
+    var columns: [String]
+}
+
+/// What the editor holds: any number of table declarations, then one query.
+struct SQLScript: Equatable {
+    var declarations: [TableDeclaration]
+    var query: SQLQuery
+}
+
 /// A parsed SQL query. A query is either a single `SELECT` block or two blocks
 /// combined with a set operator (`UNION`, `INTERSECT`, `EXCEPT`).
 indirect enum SQLQuery: Equatable {

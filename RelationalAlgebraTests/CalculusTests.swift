@@ -15,19 +15,34 @@ final class CalculusTests: XCTestCase {
     // MARK: - Helpers
 
     private func translate(_ sql: String) throws -> CalcTranslation {
-        let query = try SQLParser.parse(sql)
-        let inference = SchemaInference.infer(query)
-        var translation = TRCTranslator().translate(query, schema: inference.schema)
+        let script = try SQLParser.parseScript(sql)
+        let inference = SchemaInference.infer(script.query, declarations: script.declarations)
+        var translation = TRCTranslator().translate(script.query, schema: inference.schema)
         translation.diagnostics = (inference.diagnostics + translation.diagnostics).deduplicated
         return translation
+    }
+
+    private func lowerToDRC(_ sql: String) throws -> CalcTranslation {
+        DRCLowering.lower(try translate(sql))
     }
 
     private func inline(_ sql: String) throws -> String {
         try CalcRenderer().inline(translate(sql))
     }
 
+    private func drc(_ sql: String) throws -> String {
+        try CalcRenderer().inline(lowerToDRC(sql))
+    }
+
+    /// DRC after the simplifier — the form a textbook would print.
+    private func drcSimplified(_ sql: String) throws -> String {
+        let lowered = try lowerToDRC(sql).simplifying()
+        return CalcRenderer().inline(lowered.simplified)
+    }
+
     private func schema(_ sql: String) throws -> QuerySchema {
-        SchemaInference.infer(try SQLParser.parse(sql)).schema
+        let script = try SQLParser.parseScript(sql)
+        return SchemaInference.infer(script.query, declarations: script.declarations).schema
     }
 
     /// The single query of a translation whose root is not a set operation.
@@ -506,7 +521,8 @@ final class CalculusTests: XCTestCase {
                               formula: .comparison(lhs: .variable(x), op: ">", rhs: .literal("5")),
                               resultStyle: .tuple)
         let translation = CalcTranslation(dialect: .trc, definitions: [], root: .query(query),
-                                          steps: [], schema: QuerySchema(), diagnostics: [])
+                                          simplified: .query(query), steps: [],
+                                          schema: QuerySchema(), diagnostics: [])
         let findings = SafetyChecker.check(translation)
         XCTAssertFalse(findings.isEmpty)
         XCTAssertEqual(findings.first?.kind, .safety)
@@ -521,7 +537,8 @@ final class CalculusTests: XCTestCase {
                                                           arityKnown: true)),
                               resultStyle: .tuple)
         let translation = CalcTranslation(dialect: .trc, definitions: [], root: .query(query),
-                                          steps: [], schema: QuerySchema(), diagnostics: [])
+                                          simplified: .query(query), steps: [],
+                                          schema: QuerySchema(), diagnostics: [])
         XCTAssertFalse(SafetyChecker.check(translation).isEmpty)
     }
 
@@ -532,7 +549,8 @@ final class CalculusTests: XCTestCase {
                               formula: .forAll([u], .comparison(lhs: .variable(u), op: ">",
                                                                 rhs: .literal("0"))))
         let translation = CalcTranslation(dialect: .trc, definitions: [], root: .query(query),
-                                          steps: [], schema: QuerySchema(), diagnostics: [])
+                                          simplified: .query(query), steps: [],
+                                          schema: QuerySchema(), diagnostics: [])
         XCTAssertTrue(SafetyChecker.check(translation).contains { $0.construct == "∀u" })
     }
 
@@ -574,5 +592,224 @@ final class CalculusTests: XCTestCase {
             let translation = try translate(sample.sql)
             XCTAssertFalse(translation.steps.isEmpty, "\(sample.title) produced no steps")
         }
+    }
+
+    // MARK: - CREATE TABLE
+
+    func testDeclaredColumnsAreExactAndOrdered() throws {
+        let s = try schema("""
+            CREATE TABLE Employee (id INTEGER, name VARCHAR(50), salary DECIMAL(10,2));
+            SELECT name FROM Employee
+            """)
+        let employee = s.schema(for: "Employee")
+        XCTAssertEqual(employee?.attributes, ["id", "name", "salary"])
+        XCTAssertEqual(employee?.source, .declared)
+        XCTAssertTrue(employee?.arityKnown ?? false)
+    }
+
+    func testDeclarationOutranksInference() throws {
+        // The query only ever mentions `name`, but the declaration knows better.
+        let s = try schema("""
+            CREATE TABLE Employee (id INT, name TEXT, salary INT);
+            SELECT name FROM Employee WHERE name = 'x'
+            """)
+        XCTAssertEqual(s.schema(for: "Employee")?.attributes.count, 3)
+    }
+
+    func testTableConstraintsAreSkippedNotTakenAsColumns() throws {
+        let s = try schema("""
+            CREATE TABLE Orders (
+              id INTEGER,
+              customer_id INTEGER,
+              PRIMARY KEY (id),
+              FOREIGN KEY (customer_id) REFERENCES Customer(id)
+            );
+            SELECT id FROM Orders
+            """)
+        XCTAssertEqual(s.schema(for: "Orders")?.attributes, ["id", "customer_id"])
+    }
+
+    func testParenthesisedTypesDoNotEndTheColumnEntry() throws {
+        let s = try schema("""
+            CREATE TABLE T (a DECIMAL(10, 2), b VARCHAR(255));
+            SELECT a FROM T
+            """)
+        XCTAssertEqual(s.schema(for: "T")?.attributes, ["a", "b"])
+    }
+
+    func testMultipleDeclarationsAreAllRead() throws {
+        let s = try schema("""
+            CREATE TABLE A (x INT);
+            CREATE TABLE B (y INT);
+            SELECT x FROM A
+            """)
+        XCTAssertTrue(s.schema(for: "A")?.arityKnown ?? false)
+        XCTAssertTrue(s.schema(for: "B")?.arityKnown ?? false)
+    }
+
+    func testQueryWithoutDeclarationsStillParses() throws {
+        XCTAssertEqual(try SQLParser.parseScript("SELECT a FROM T").declarations.count, 0)
+    }
+
+    // MARK: - DRC lowering
+
+    func testTupleVariableExplodesIntoOneVariablePerColumn() throws {
+        let text = try drc("""
+            CREATE TABLE Employee (name TEXT, salary INT, dept_id INT);
+            SELECT name, salary FROM Employee WHERE salary > 50000
+            """)
+        XCTAssertEqual(text, "{ ⟨n, s⟩ | ∃d ( Employee(n, s, d) ∧ s > 50000 ) }")
+    }
+
+    func testColumnsTheResultExportsStayFree() throws {
+        let text = try drc("""
+            CREATE TABLE T (a INT, b INT, c INT);
+            SELECT a, b, c FROM T
+            """)
+        // Nothing to quantify: every column is exported.
+        XCTAssertEqual(text, "{ ⟨a, b, c⟩ | T(a, b, c) }")
+    }
+
+    func testAtomIsMarkedIncompleteWhenTheSchemaWasOnlyInferred() throws {
+        let text = try drc("SELECT e.name FROM Employee e WHERE e.salary > 1")
+        // Two columns are known; the relation may well have more, and a guessed
+        // arity would be a wrong formula rather than an incomplete one.
+        XCTAssertTrue(text.contains("Employee(n, s, …)"), text)
+    }
+
+    func testIncompleteArityIsReported() throws {
+        let translation = try lowerToDRC("SELECT e.name FROM Employee e")
+        XCTAssertTrue(translation.diagnostics.contains {
+            $0.construct == "Employee" && $0.message.contains("CREATE TABLE")
+        })
+    }
+
+    func testJoinLowersToTwoAtomsAndAnEquality() throws {
+        let text = try drc("""
+            CREATE TABLE Employee (name TEXT, dept_id INT);
+            CREATE TABLE Department (id INT, location TEXT);
+            SELECT e.name FROM Employee e JOIN Department d ON e.dept_id = d.id
+            """)
+        // Nested, not flattened: collapsing the quantifiers is a named
+        // simplification pass, not something the lowering does silently.
+        XCTAssertEqual(text,
+            "{ ⟨n⟩ | ∃d ( Employee(n, d) ∧ ∃i, l ( Department(i, l) ∧ d = i ) ) }")
+    }
+
+    func testQuantifiersFromSubqueriesSurviveLowering() throws {
+        let text = try drc("""
+            CREATE TABLE Customer (id INT, name TEXT);
+            CREATE TABLE Orders (oid INT, cid INT);
+            SELECT c.name FROM Customer c
+            WHERE NOT EXISTS (SELECT o.oid FROM Orders o WHERE o.cid = c.id)
+            """)
+        XCTAssertTrue(text.contains("¬∃"), text)
+        XCTAssertTrue(text.contains("Orders(o, c)"), text)
+    }
+
+    func testLoweredQueriesAreSafe() throws {
+        for sample in SampleQueries.all {
+            let lowered = try lowerToDRC(sample.sql)
+            XCTAssertTrue(SafetyChecker.check(lowered).isEmpty,
+                          "\(sample.title): \(SafetyChecker.check(lowered).map(\.message))")
+        }
+    }
+
+    func testEverySampleLowersWithoutCrashing() throws {
+        for sample in SampleQueries.all {
+            let text = try lowerToDRC(sample.sql).prettyText()
+            XCTAssertTrue(text.contains("{"), "\(sample.title): \(text)")
+        }
+    }
+
+    // MARK: - Simplification
+
+    func testEqualityUnificationMergesJoinedColumns() throws {
+        let text = try drcSimplified("""
+            CREATE TABLE Employee (name TEXT, dept_id INT);
+            CREATE TABLE Department (id INT, location TEXT);
+            SELECT e.name FROM Employee e JOIN Department d ON e.dept_id = d.id
+            """)
+        // One variable now stands in both atoms, and the equality is gone.
+        XCTAssertEqual(text, "{ ⟨n⟩ | ∃d, l ( Employee(n, d) ∧ Department(d, l) ) }")
+    }
+
+    func testConstantsAreInlinedIntoTheAtom() throws {
+        let text = try drcSimplified("""
+            CREATE TABLE Department (id INT, location TEXT);
+            SELECT d.id FROM Department d WHERE d.location = 'Berlin'
+            """)
+        XCTAssertEqual(text, "{ ⟨i⟩ | Department(i, 'Berlin') }")
+    }
+
+    func testNegatedExistentialBecomesAGuardedUniversal() throws {
+        let outcome = CalcSimplifier.simplify(try translate("""
+            SELECT s.name FROM Student s
+            WHERE NOT EXISTS (
+              SELECT c.id FROM Course c
+              WHERE NOT EXISTS (
+                SELECT e.sid FROM Enrolled e
+                WHERE e.sid = s.id AND e.cid = c.id))
+            """).root)
+        XCTAssertEqual(CalcRenderer().inline(outcome.expression),
+            "{ s.name | Student(s) ∧ ∀c ( Course(c) → ∃e ( Enrolled(e) ∧ e.sid = s.id ∧ e.cid = c.id ) ) }")
+        XCTAssertTrue(outcome.records.contains { $0.name == "Rewrite ¬∃ as ∀" })
+    }
+
+    func testPlainNegatedExistentialIsLeftAlone() throws {
+        // `¬∃o ( Orders(o) )` would only become `∀o ( ¬Orders(o) )`, which is
+        // no clearer than where it started.
+        let outcome = CalcSimplifier.simplify(try translate("""
+            SELECT c.name FROM Customer c
+            WHERE NOT EXISTS (SELECT o.id FROM Orders o WHERE o.cid = c.id)
+            """).root)
+        XCTAssertTrue(CalcRenderer().inline(outcome.expression).contains("¬∃"))
+    }
+
+    func testSimplificationIsIdempotent() throws {
+        for sample in SampleQueries.all {
+            let once = CalcSimplifier.simplify(try translate(sample.sql).root).expression
+            let twice = CalcSimplifier.simplify(once).expression
+            XCTAssertEqual(once, twice, "\(sample.title) is not a fixpoint")
+        }
+    }
+
+    func testSimplificationPreservesSafety() throws {
+        for sample in SampleQueries.all {
+            var lowered = try lowerToDRC(sample.sql)
+            lowered = lowered.simplifying()
+            var checked = lowered
+            checked.root = lowered.simplified
+            XCTAssertTrue(SafetyChecker.check(checked).isEmpty,
+                          "\(sample.title) became unsafe under simplification")
+        }
+    }
+
+    func testSimplificationRecordsAStepPerPassThatFired() throws {
+        let lowered = try lowerToDRC("""
+            CREATE TABLE Employee (name TEXT, dept_id INT);
+            CREATE TABLE Department (id INT, location TEXT);
+            SELECT e.name FROM Employee e JOIN Department d ON e.dept_id = d.id
+            WHERE d.location = 'Berlin'
+            """).simplifying()
+        XCTAssertFalse(lowered.simplifications.isEmpty)
+        XCTAssertTrue(lowered.isSimplified)
+        // Steps continue the construction sequence's numbering.
+        XCTAssertEqual(lowered.simplifications.first?.index, lowered.steps.count + 1)
+    }
+
+    func testUnchangedFormulaOffersNoSimplification() throws {
+        let translation = try translate("SELECT a FROM T").simplifying()
+        XCTAssertFalse(translation.isSimplified)
+        XCTAssertTrue(translation.simplifications.isEmpty)
+    }
+
+    func testResultVariablesAreNeverSubstitutedAway() throws {
+        // `a` is exported, so unification must keep it rather than the bound name.
+        let text = try drcSimplified("""
+            CREATE TABLE X (a INT, b INT);
+            SELECT x.a FROM X x WHERE x.a = x.b
+            """)
+        XCTAssertTrue(text.contains("⟨a⟩"), text)
     }
 }

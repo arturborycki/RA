@@ -13,6 +13,7 @@ import UniformTypeIdentifiers
 struct EditorView: View {
     @EnvironmentObject private var viewModel: AppViewModel
     @State private var showImporter = false
+    @State private var showSchema = false
     @State private var importError: String?
     @FocusState private var editorFocused: Bool
 
@@ -23,6 +24,9 @@ struct EditorView: View {
             statusBar
         }
         .toolbar { toolbarContent }
+        .sheet(isPresented: $showSchema) {
+            SchemaInspectorView().environmentObject(viewModel)
+        }
         .fileImporter(
             isPresented: $showImporter,
             allowedContentTypes: Self.importTypes,
@@ -99,6 +103,12 @@ struct EditorView: View {
                 }
             } label: {
                 Label("Examples", systemImage: "text.book.closed")
+            }
+
+            Button {
+                showSchema = true
+            } label: {
+                Label("Schema", systemImage: "tablecells")
             }
 
             Button {

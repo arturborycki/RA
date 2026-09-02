@@ -13,16 +13,25 @@ import SwiftUI
 import UIKit
 
 struct CalculusStepsView: View {
-    @EnvironmentObject private var viewModel: AppViewModel
+    let translation: CalcTranslation
 
     var body: some View {
-        if let translation = viewModel.calculus, !translation.steps.isEmpty {
+        if !translation.steps.isEmpty {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     FidelityBanner(diagnostics: translation.diagnostics)
 
                     ForEach(translation.steps) { step in
                         CalculusStepCard(step: step)
+                    }
+
+                    if !translation.simplifications.isEmpty {
+                        SectionLabel(text: "Simplification",
+                                     detail: "Meaning-preserving rewrites. Each is optional — the " +
+                                             "expression above is already correct.")
+                        ForEach(translation.simplifications) { step in
+                            CalculusStepCard(step: step)
+                        }
                     }
 
                     finalCard(translation)
@@ -40,12 +49,13 @@ struct CalculusStepsView: View {
             Label("Final expression", systemImage: "checkmark.seal.fill")
                 .font(.headline)
                 .foregroundStyle(.green)
-            Text("One formula, built in \(translation.steps.count) steps — not a chain of " +
-                 "intermediate relations. The calculus says *what* the answer is; the algebra " +
-                 "says how to compute it.")
+            Text("One formula, built in \(translation.steps.count) step" +
+                 (translation.steps.count == 1 ? "" : "s") + " — not a chain of intermediate " +
+                 "relations. The calculus says *what* the answer is; the algebra says how to " +
+                 "compute it.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            CalculusText(text: translation.prettyText())
+            CalculusText(text: translation.simplifiedText())
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
@@ -100,6 +110,27 @@ struct CalculusStepCard: View {
         }
         .padding()
         .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
+    }
+}
+
+/// A divider with a heading, marking a run of cards as a separate phase.
+struct SectionLabel: View {
+    let text: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(text)
+                .font(.caption.weight(.semibold))
+                .textCase(.uppercase)
+                .foregroundStyle(.secondary)
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 8)
     }
 }
 

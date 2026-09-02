@@ -15,6 +15,7 @@ import SwiftUI
 enum Notation: String, CaseIterable, Identifiable {
     case ra = "RA"
     case trc = "TRC"
+    case drc = "DRC"
 
     var id: String { rawValue }
 
@@ -24,14 +25,15 @@ enum Notation: String, CaseIterable, Identifiable {
         switch self {
         case .ra:  return "Relational Algebra"
         case .trc: return "Tuple Relational Calculus"
+        case .drc: return "Domain Relational Calculus"
         }
     }
 
     /// The views this notation can currently show, in display order.
     var availableTabs: [ResultTab] {
         switch self {
-        case .ra:  return ResultTab.allCases
-        case .trc: return [.steps, .formula]
+        case .ra:            return ResultTab.allCases
+        case .trc, .drc:     return [.steps, .formula]
         }
     }
 }

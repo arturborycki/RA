@@ -27,6 +27,7 @@ struct TRCTranslator {
         return CalcTranslation(dialect: .trc,
                                definitions: builder.definitions,
                                root: root,
+                               simplified: root,
                                steps: builder.steps,
                                schema: schema,
                                diagnostics: builder.diagnostics.deduplicated)
@@ -376,12 +377,10 @@ final class TRCBuilder {
     }
 
     private func relationAtom(_ relation: String, _ variable: CalcVar) -> CalcFormula {
-        // A TRC atom is `R(t)`, not positional, so an incomplete attribute list
-        // costs nothing to render here. The flag is carried truthfully anyway,
-        // because DRC lowering reads it to decide whether `R(x, y, …)` can be
-        // written at all.
-        let arityKnown = schema.schema(for: relation)?.arityKnown ?? false
-        return .relationAtom(relation: relation, terms: [.variable(variable)], arityKnown: arityKnown)
+        // A TRC atom names one tuple variable, so its term list is complete
+        // whatever the schema knows. Positional completeness is DRC's problem,
+        // and the lowering reads the schema directly rather than this flag.
+        .relationAtom(relation: relation, terms: [.variable(variable)], arityKnown: true)
     }
 
     private func joinConditions(_ join: Join, scope: TupleScope) -> [CalcFormula] {

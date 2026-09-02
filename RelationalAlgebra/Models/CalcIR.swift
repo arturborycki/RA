@@ -88,9 +88,13 @@ extension CalcTerm {
 
 /// A well-formed formula of the relational calculus.
 indirect enum CalcFormula: Equatable {
-    /// `Employee(t)` in TRC, `Employee(n, s, d)` in DRC. `arityKnown` is false
-    /// when the schema was inferred from the query rather than declared, which
-    /// the renderer marks with a trailing ellipsis.
+    /// `Employee(t)` in TRC, `Employee(n, s, d)` in DRC.
+    ///
+    /// `arityKnown` says whether `terms` is the relation's *complete* column
+    /// list. A TRC atom names one tuple variable and is therefore always
+    /// complete; a DRC atom is positional, so it is complete only when the
+    /// schema was declared. An incomplete list renders with a trailing ellipsis
+    /// rather than passing a guessed arity off as fact.
     case relationAtom(relation: String, terms: [CalcTerm], arityKnown: Bool)
     case comparison(lhs: CalcTerm, op: String, rhs: CalcTerm)
     /// N-ary on purpose: the top-level conjunction is where the derivation

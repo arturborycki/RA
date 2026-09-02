@@ -128,10 +128,16 @@ struct ResultsView: View {
             case .formula: FormulaView()
             case .diagram: TreeView()
             }
-        case .trc:
-            switch activeTab {
-            case .steps:   CalculusStepsView()
-            default:       CalculusFormulaView()
+        case .trc, .drc:
+            if let translation = viewModel.calculus(notation) {
+                switch activeTab {
+                case .steps:   CalculusStepsView(translation: translation)
+                default:       CalculusFormulaView(translation: translation)
+                }
+            } else {
+                EmptyResultView(systemImage: "function",
+                                message: "The \(notation.title.lowercased()) expression appears " +
+                                         "here once the SQL parses.")
             }
         }
     }

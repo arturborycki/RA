@@ -16,7 +16,8 @@ import Combine
 /// notations instant.
 struct TranslationBundle {
     var ra: RATranslation
-    var calculus: CalcTranslation
+    var trc: CalcTranslation
+    var drc: CalcTranslation
     var schema: QuerySchema
 }
 
@@ -44,7 +45,18 @@ final class AppViewModel: ObservableObject {
     var translation: RATranslation? { result?.ra }
 
     /// The tuple-relational-calculus translation.
-    var calculus: CalcTranslation? { result?.calculus }
+    var trc: CalcTranslation? { result?.trc }
+
+    /// The domain-relational-calculus translation.
+    var drc: CalcTranslation? { result?.drc }
+
+    func calculus(_ notation: Notation) -> CalcTranslation? {
+        switch notation {
+        case .ra:  return nil
+        case .trc: return trc
+        case .drc: return drc
+        }
+    }
 
     /// What the translator worked out about each relation.
     var schema: QuerySchema? { result?.schema }
@@ -93,8 +105,8 @@ final class AppViewModel: ObservableObject {
             return
         }
         do {
-            let query = try SQLParser.parse(text)
-            result = AppViewModel.translate(query)
+            let script = try SQLParser.parseScript(text)
+            result = AppViewModel.translate(script)
             errorMessage = nil
             errorPosition = nil
         } catch let error as ParseError {
@@ -113,17 +125,24 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Parse-free so tests can drive it from an AST directly.
-    static func translate(_ query: SQLQuery) -> TranslationBundle {
-        let inference = SchemaInference.infer(query)
-        var calculus = TRCTranslator().translate(query, schema: inference.schema)
+    static func translate(_ script: SQLScript) -> TranslationBundle {
+        let query = script.query
+        let inference = SchemaInference.infer(query, declarations: script.declarations)
+
+        var trc = TRCTranslator().translate(query, schema: inference.schema).simplifying()
+        var drc = DRCLowering.lower(trc).simplifying()
+
         // Schema ambiguities are as much a fidelity note as a translation
         // fallback, and safety findings belong beside them: all three are
         // reasons not to take the rendered formula entirely at face value.
-        calculus.diagnostics = (inference.diagnostics
-                                + calculus.diagnostics
-                                + SafetyChecker.check(calculus)).deduplicated
+        trc.diagnostics = (inference.diagnostics + trc.diagnostics
+                           + SafetyChecker.check(trc)).deduplicated
+        drc.diagnostics = (inference.diagnostics + drc.diagnostics
+                           + SafetyChecker.check(drc)).deduplicated
+
         return TranslationBundle(ra: RATranslator().translate(query),
-                                 calculus: calculus,
+                                 trc: trc,
+                                 drc: drc,
                                  schema: inference.schema)
     }
 }

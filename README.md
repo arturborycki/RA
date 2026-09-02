@@ -41,10 +41,10 @@ ORDER BY avg_salary DESC;
 
 Plus a pannable / zoomable tree diagram of the same expression.
 
-## Two notations
+## Three notations
 
-A **notation** picker switches the results pane between relational algebra and
-**tuple relational calculus**; domain relational calculus follows.
+A **notation** picker switches the results pane between relational algebra,
+**tuple relational calculus** and **domain relational calculus**.
 
 ### Relational algebra — three views
 
@@ -102,6 +102,64 @@ with a negation:
 { ⟨a⟩ | ∃x ( X(x) ∧ x.a = a ) ∧ ¬∃y ( Y(y) ∧ y.a = a ) }
 ```
 
+### Domain relational calculus
+
+The same expression with every tuple variable exploded into one variable per
+column. A domain atom is *positional*, so this is the notation that needs to know
+each relation's arity and column order:
+
+```
+{ ⟨n⟩ | ∃d, l ( Employee(n, d) ∧ Department(d, l) ) }
+```
+
+This is a mechanical lowering of the tuple form — Codd's equivalence — not a
+second translator, so quantifier scoping, correlation and negation all carry over
+unchanged.
+
+#### Declaring your tables
+
+Paste `CREATE TABLE` statements above the query and the atoms become exact:
+
+```sql
+CREATE TABLE Employee (name TEXT, salary INT, dept_id INT);
+
+SELECT name, salary FROM Employee WHERE salary > 50000;
+```
+```
+{ ⟨n, s⟩ | ∃d ( Employee(n, s, d) ∧ s > 50000 ) }
+```
+
+Without a declaration the app reconstructs what it can from the query's own
+column references and marks the atom incomplete rather than inventing the
+missing columns — `Employee(n, s, …)` — because a guessed arity is a *wrong*
+formula, not a partial one. The **Schema** button in the editor toolbar lists
+every relation with its columns numbered by position, says where each came from,
+and offers a `CREATE TABLE` template for the ones that were only inferred.
+
+#### Simplification
+
+The direct translation is mechanical; these meaning-preserving rewrites turn it
+into the form a textbook would print. Each is shown as its own step, because
+"why did the equality disappear?" is a question worth answering:
+
+| Rewrite | Before | After |
+|---|---|---|
+| Unify equated variables | `Employee(n, d) ∧ Department(i, l) ∧ d = i` | `Employee(n, d) ∧ Department(d, l)` |
+| Inline constants | `Department(i, l) ∧ l = 'Berlin'` | `Department(i, 'Berlin')` |
+| Flatten quantifiers | `∃x ( ∃y ( φ ) )` | `∃x, y ( φ )` |
+| Drop vacuous quantifiers | `∃x ( φ )`, x unused | `φ` |
+| Rewrite ¬∃ as ∀ | `¬∃c ( C(c) ∧ ¬φ )` | `∀c ( C(c) → φ )` |
+
+That last one is where SQL's doubly-negated division query turns back into "for
+every":
+
+```
+{ s.name | Student(s) ∧ ∀c ( Course(c) → ∃e ( Enrolled(e) ∧ e.sid = s.id ∧ e.cid = c.id ) ) }
+```
+
+The Formula view shows the simplified form with a toggle back to the direct
+translation.
+
 #### Safety
 
 Relational calculus admits *unsafe* expressions — `{ t | ¬R(t) }` denotes every
@@ -151,6 +209,8 @@ right out of the box.
 The parser covers the `SELECT` surface that maps cleanly onto relational
 algebra:
 
+- `CREATE TABLE` declarations preceding the query — column names and order,
+  which is what makes the domain calculus exact
 - `WITH` common table expressions (incl. `RECURSIVE`) → labelled sub-derivations
 - `SELECT` list with `*`, `table.*`, expressions, and `AS` aliases → **π / ρ**
 - `DISTINCT` → **δ**
@@ -211,23 +271,29 @@ SQLQuery ─┬─ RATranslator      (Translator/…)    → [RAStep] + RANode
           │                                         └─► .tree    → TreeLayout → canvas
           │
           ├─ SchemaInference   (Calculus/…)      → QuerySchema
+          │                                         ▲ CREATE TABLE declarations
           │
-          └─ TRCTranslator     (Calculus/…)      → CalcTranslation
-                                                    └─► CalcRenderer → set-builder text
+          └─ TRCTranslator     (Calculus/…)      → CalcTranslation (TRC)
+                                                    │
+                                                    ├─ DRCLowering   → CalcTranslation (DRC)
+                                                    ├─ CalcSimplifier → simplified form + steps
+                                                    ├─ SafetyChecker  → diagnostics
+                                                    └─ CalcRenderer   → set-builder text
 ```
 
 The calculus translates from the **SQL AST**, not from `RANode`: by the time RA
 is built, predicates are flattened to strings and sub-queries erased to `(…)`,
 while SQL is very nearly sugar over TRC to begin with. The IR is shared, so
 domain relational calculus lowers from the tuple form rather than needing a
-second translator.
+second translator — and one simplifier, one safety checker and one renderer
+serve both.
 
 | Layer | Files |
 |-------|-------|
 | **Models** | `Models/SQLAST.swift`, `Models/RANode.swift`, `Models/CalcIR.swift`, `Models/Schema.swift`, `Models/CalcDiagnostic.swift` |
 | **Parser** | `Parser/Token.swift`, `Parser/Lexer.swift`, `Parser/SQLParser.swift` |
 | **Translator** | `Translator/RATranslator.swift`, `RAStep.swift`, `ExpressionRendering.swift` |
-| **Calculus** | `Calculus/SchemaInference.swift`, `TRCTranslator.swift`, `SafetyChecker.swift`, `CalcRenderer.swift`, `CalcStep.swift`, `CalcTranslation.swift` |
+| **Calculus** | `Calculus/SchemaInference.swift`, `TRCTranslator.swift`, `DRCLowering.swift`, `CalcSimplifier.swift`, `SafetyChecker.swift`, `CalcRenderer.swift`, `CalcStep.swift`, `CalcTranslation.swift` |
 | **View model** | `ViewModel/AppViewModel.swift`, `ViewModel/SampleQueries.swift` |
 | **UI** | `App/…`, `Views/…` (editor, steps, formula, tree, calculus, banner) |
 
@@ -259,8 +325,8 @@ each SQL construct produces the expected RA glyph.
 golden formulas for the core constructs, fidelity assertions (that `DISTINCT` is
 explained rather than dropped, that `ORDER BY` lands outside the braces), and
 structural invariants checked across every bundled sample — every quantified
-variable is used in its body, and every variable is range-restricted by a
-positive relation atom.
+variable is used in its body, every formula passes the safety checker, and
+simplification is both idempotent and safety-preserving.
 
 ## Notes & limitations
 
@@ -270,8 +336,8 @@ positive relation atom.
   inside a formula, so it is kept as an opaque atom and the reason is reported.
 - `¬∃x ( R(x) ∧ ¬φ )` is not yet rewritten to the equivalent `∀x ( R(x) → φ )`;
   that rewrite belongs to the simplifier, alongside equality unification.
-- Domain relational calculus is not generated yet: its atoms are positional, so
-  it needs `CREATE TABLE` parsing to know each relation's arity and column order.
+- Aggregation still has no calculus notation of its own: `GROUP BY` and the
+  aggregate functions are annotated outside the braces rather than expressed.
   See [`docs/DESIGN-CALCULUS.md`](docs/DESIGN-CALCULUS.md).
 - `ORDER BY` (τ) and duplicate handling are the usual pragmatic extensions to
   the pure (set-based) relational algebra.

@@ -170,9 +170,9 @@ struct CalcRenderer {
         switch formula {
         case let .relationAtom(relation, terms, arityKnown):
             var inner = terms.map { $0.plainText }.joined(separator: ", ")
-            // An inferred attribute list may be missing columns; say so in the
-            // atom rather than presenting a guessed arity as fact.
-            if !arityKnown && terms.count > 1 { inner += ", …" }
+            // An incomplete column list is marked, never padded out to a
+            // guessed arity — a wrong arity is a wrong formula.
+            if !arityKnown { inner += inner.isEmpty ? "…" : ", …" }
             text = "\(relation)(\(inner))"
 
         case let .comparison(lhs, op, rhs):
