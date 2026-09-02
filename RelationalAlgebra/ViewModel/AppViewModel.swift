@@ -126,8 +126,12 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Parse-free so tests can drive it from an AST directly.
-    static func translate(_ script: SQLScript) -> TranslationBundle {
+    /// The whole translation pipeline, as a pure function.
+    ///
+    /// `nonisolated` because it reads no actor state — it takes a parsed script
+    /// and returns a value. That is what lets a test drive it directly, and it
+    /// is also true: nothing here needs the main actor.
+    nonisolated static func translate(_ script: SQLScript) -> TranslationBundle {
         let query = script.query
         let inference = SchemaInference.infer(query, declarations: script.declarations)
 
