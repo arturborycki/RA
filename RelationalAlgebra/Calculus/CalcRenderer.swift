@@ -37,20 +37,21 @@ extension CalcTerm {
             return "\(lhs.plainText) \(op) \(rhs.plainText)"
         case let .opaque(text):
             return text
-        case let .aggregate(spec):
-            return spec.plainText
+        case let .aggregate(function, distinct, element, variables, condition):
+            return CalcTerm.aggregateText(function: function, distinct: distinct,
+                                          element: element, variables: variables,
+                                          condition: condition)
         }
     }
-}
 
-extension AggregateSpec {
     /// `COUNT{ u | Employee(u) ∧ u.dept_id = d }`, or with the collected value
     /// named where the aggregate is over one: `AVG{ u.salary | … }`.
-    var plainText: String {
-        let renderer = CalcRenderer()
+    static func aggregateText(function: String, distinct: Bool, element: CalcTerm?,
+                              variables: [CalcVar], condition: CalcFormula) -> String {
         let collected = element?.plainText ?? variables.map(\.name).joined(separator: ", ")
         let prefix = distinct ? "DISTINCT " : ""
-        return "\(function){ \(prefix)\(collected) \(CalcSymbol.such) \(renderer.inline(condition)) }"
+        let body = CalcRenderer().inline(condition)
+        return "\(function){ \(prefix)\(collected) \(CalcSymbol.such) \(body) }"
     }
 }
 

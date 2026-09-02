@@ -456,20 +456,26 @@ final class TRCBuilder {
         let key = expr.rendered
         if let existing = bindings[key] { return existing }
 
-        let spec = aggregateSpec(expr, source: source, membership: membership)
-        let variable = allocate(preferred: alias ?? shortName(for: spec.function), relation: nil)
+        let aggregate = aggregateTerm(expr, source: source, membership: membership)
+        let variable = allocate(preferred: alias ?? shortName(for: aggregateFunction(of: expr)),
+                                relation: nil)
         bindings[key] = variable
-        conjuncts.append(.comparison(lhs: .variable(variable), op: "=", rhs: .aggregate(spec)))
+        conjuncts.append(.comparison(lhs: .variable(variable), op: "=", rhs: aggregate))
         return variable
     }
 
-    private func aggregateSpec(_ expr: Expression, source: SourceBlock,
-                               membership: CalcFormula) -> AggregateSpec {
+    private func aggregateFunction(of expr: Expression) -> String {
+        guard case let .function(name, _, _) = expr else { return expr.rendered }
+        return name.uppercased()
+    }
+
+    private func aggregateTerm(_ expr: Expression, source: SourceBlock,
+                               membership: CalcFormula) -> CalcTerm {
         guard case let .function(name, args, distinct) = expr else {
             // An aggregate wrapped in arithmetic — kept whole rather than split,
             // since splitting it would change what is being averaged.
-            return AggregateSpec(function: expr.rendered, distinct: false, element: nil,
-                                 variables: source.scope.localVariables, condition: membership)
+            return .aggregate(function: expr.rendered, distinct: false, element: nil,
+                              variables: source.scope.localVariables, condition: membership)
         }
         // COUNT(*) counts tuples; every other aggregate collects a value.
         let element: CalcTerm?
@@ -478,8 +484,8 @@ final class TRCBuilder {
         } else {
             element = args.first.map { term($0, scope: source.scope) }
         }
-        return AggregateSpec(function: name.uppercased(), distinct: distinct, element: element,
-                             variables: source.scope.localVariables, condition: membership)
+        return .aggregate(function: name.uppercased(), distinct: distinct, element: element,
+                          variables: source.scope.localVariables, condition: membership)
     }
 
     /// Translate HAVING, replacing each aggregate with the variable already
@@ -851,7 +857,10 @@ final class TRCBuilder {
         case let .variable(v):           return [v]
         case let .attribute(v, _):       return [v]
         case .literal, .opaque:          return []
-        case let .aggregate(spec):       return spec.freeVariables.map { $0 }.sorted { $0.name < $1.name }
+        case let .aggregate(_, _, element, variables, condition):
+            return CalcTerm.aggregateFreeVariables(element: element, variables: variables,
+                                                   condition: condition)
+                .sorted { $0.name < $1.name }
         case let .application(_, args, _): return args.flatMap { orderedTermVariables($0) }
         case let .binaryOp(_, lhs, rhs): return orderedTermVariables(lhs) + orderedTermVariables(rhs)
         }

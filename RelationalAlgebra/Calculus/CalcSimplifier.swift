@@ -390,13 +390,13 @@ struct CalcSimplifier {
         case let .binaryOp(op, lhs, rhs):
             return .binaryOp(op: op, lhs: substitute(lhs, variable, with: replacement),
                              rhs: substitute(rhs, variable, with: replacement))
-        case let .aggregate(spec):
+        case let .aggregate(function, distinct, element, variables, condition):
             // A comprehension that re-binds the name shadows it.
-            guard !spec.variables.contains(variable) else { return term }
-            var updated = spec
-            updated.element = spec.element.map { substitute($0, variable, with: replacement) }
-            updated.condition = substitute(spec.condition, variable, with: replacement)
-            return .aggregate(updated)
+            guard !variables.contains(variable) else { return term }
+            return .aggregate(function: function, distinct: distinct,
+                              element: element.map { substitute($0, variable, with: replacement) },
+                              variables: variables,
+                              condition: substitute(condition, variable, with: replacement))
         case .literal, .opaque:
             return term
         }

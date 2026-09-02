@@ -66,9 +66,22 @@ indirect enum CalcTerm: Equatable {
     case application(name: String, args: [CalcTerm], distinct: Bool)
     /// An infix arithmetic or concatenation operator: `x + y`, `a || b`.
     case binaryOp(op: String, lhs: CalcTerm, rhs: CalcTerm)
-    /// An aggregate over a set comprehension — an *extension* to the pure
-    /// calculus, which has no aggregation at all. See `AggregateSpec`.
-    case aggregate(AggregateSpec)
+    /// An aggregate over a set comprehension: `COUNT{ u | Employee(u) ∧ u.d = x }`.
+    ///
+    /// First-order relational calculus has no aggregation, so this is a
+    /// documented *extension*, labelled as one wherever it appears. The shape is
+    /// the one textbooks reach for: a function applied to the multiset a
+    /// comprehension collects.
+    ///
+    /// The parts are spelled out here rather than wrapped in a struct because a
+    /// struct in this loop is a genuine recursion: `indirect` boxes an *enum's*
+    /// payload, and a struct cannot be indirect, so `CalcTerm` → struct →
+    /// `CalcFormula` → `CalcTerm` is a circular reference the compiler rejects.
+    /// `element` is nil for `COUNT(*)`, which counts tuples rather than values;
+    /// `variables` are the comprehension's own scope, and `condition` is what
+    /// qualifies a tuple for the group.
+    case aggregate(function: String, distinct: Bool, element: CalcTerm?,
+                   variables: [CalcVar], condition: CalcFormula)
     /// Anything not yet given structure, carrying its pre-rendered text.
     /// Always accompanied by a diagnostic so it is never silently approximated.
     case opaque(String)
@@ -83,34 +96,22 @@ extension CalcTerm {
         case .literal, .opaque:             return []
         case let .application(_, args, _):  return args.reduce(into: Set()) { $0.formUnion($1.variables) }
         case let .binaryOp(_, lhs, rhs):    return lhs.variables.union(rhs.variables)
-        case let .aggregate(spec):          return spec.freeVariables
+        case let .aggregate(_, _, element, variables, condition):
+            return CalcTerm.aggregateFreeVariables(element: element, variables: variables,
+                                                   condition: condition)
         }
     }
 }
 
-/// An aggregate over a set comprehension: `COUNT{ u | Employee(u) ∧ u.dept_id = d }`.
-///
-/// First-order relational calculus has no aggregation, so this is a documented
-/// *extension*, labelled as one wherever it appears. The shape is the one
-/// textbooks reach for when they introduce aggregation: a function applied to
-/// the multiset a comprehension collects.
-struct AggregateSpec: Equatable {
-    /// COUNT, SUM, AVG, MIN, MAX …
-    var function: String
-    var distinct: Bool
-    /// The value collected per qualifying tuple. `nil` for `COUNT(*)`, which
-    /// counts tuples rather than values.
-    var element: CalcTerm?
-    /// The variables the comprehension binds — its own scope.
-    var variables: [CalcVar]
-    /// What qualifies a tuple for this group.
-    var condition: CalcFormula
-
-    /// Variables referred to from *outside* the comprehension — the grouping
-    /// variables that make one comprehension per group rather than one overall.
-    var freeVariables: Set<CalcVar> {
-        let inner = condition.freeVariables.union(element?.variables ?? [])
-        return inner.subtracting(variables)
+extension CalcTerm {
+    /// What an aggregate comprehension refers to from *outside* its own scope —
+    /// the grouping variables that make it one comprehension per group rather
+    /// than one over the whole relation.
+    static func aggregateFreeVariables(element: CalcTerm?, variables: [CalcVar],
+                                       condition: CalcFormula) -> Set<CalcVar> {
+        condition.freeVariables
+            .union(element?.variables ?? [])
+            .subtracting(variables)
     }
 }
 
