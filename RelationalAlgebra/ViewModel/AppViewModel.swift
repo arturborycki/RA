@@ -72,7 +72,9 @@ final class AppViewModel: ObservableObject {
     }
 
     func load(sample: SampleQuery) {
-        sqlText = sample.sql
+        // `text`, not `sql`: a sample that carries table declarations loads them
+        // too, which is what makes its domain-calculus atoms exact.
+        sqlText = sample.text
     }
 
     func replaceText(_ text: String) {

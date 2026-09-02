@@ -228,7 +228,12 @@ is positional.
 - **Type** directly in the monospaced editor (live parsing, 250 ms debounce).
 - **Paste** from the clipboard.
 - **Import** a `.sql` / text file via the iOS document picker.
-- **Examples** menu with six ready-made queries.
+- **Examples** menu, grouped: **Basics** (one construct at a time), **TPC-H**
+  (a selection of the 22 decision-support queries, each loading the `CREATE TABLE`
+  declarations for the tables it touches, so the domain calculus comes out exact)
+  and **TPC-DS** (a few of the 99). The benchmark queries are where the calculus
+  earns its keep — TPC-H Q4, Q16, Q17, Q18 and Q21 are all built on correlated
+  `EXISTS` / `NOT EXISTS` / `IN`, which relational algebra has no way to express.
 
 ## Appearance
 
@@ -272,7 +277,7 @@ The grammar targets the constructs used by the **TPC-H** (22 queries) and
 sub-queries. Correlated / scalar sub-queries inside predicates are shown
 compactly as `(…)` within the σ condition rather than expanded into their own
 derivation; the outer query's relational-algebra structure is always derived in
-full. If you hit a query that doesn't parse, the editor points at the offending
+full. The calculus notations *do* expand them, into ∃ and ∀ — see below. If you hit a query that doesn't parse, the editor points at the offending
 token — please file it.
 
 ## Operator legend

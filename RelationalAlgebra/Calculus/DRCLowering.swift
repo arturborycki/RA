@@ -241,8 +241,15 @@ final class DRCLoweringEngine {
 
     /// A mnemonic name taken from the attribute — `salary` → `s` — uniqued
     /// against everything already handed out.
+    ///
+    /// The name comes from the segment *after* the last underscore, because
+    /// schemas that prefix every column with the table (`l_orderkey`,
+    /// `l_quantity`, TPC-H throughout) would otherwise give every one of a
+    /// sixteen-column relation the same letter: `l, l₁, l₂, …` says nothing.
+    /// `orderkey` → `o` and `quantity` → `q` do.
     private func allocate(for attribute: String, relation: String) -> CalcVar {
-        let letters = attribute.lowercased().filter { $0.isLetter }
+        let stem = attribute.split(separator: "_").last.map(String.init) ?? attribute
+        let letters = stem.lowercased().filter { $0.isLetter }
         var name = letters.isEmpty ? "x" : String(letters.first!)
         if usedNames.contains(name) {
             var suffix = 1

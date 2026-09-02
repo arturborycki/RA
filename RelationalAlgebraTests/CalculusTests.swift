@@ -294,14 +294,14 @@ final class CalculusTests: XCTestCase {
 
     func testEveryQuantifiedVariableIsUsedInItsBody() throws {
         for sample in SampleQueries.all {
-            let translation = try translate(sample.sql)
+            let translation = try translate(sample.text)
             assertQuantifiersAreUsed(in: translation.root, sample: sample.title)
         }
     }
 
     func testAllSamplesTranslateWithoutCrashing() throws {
         for sample in SampleQueries.all {
-            let translation = try translate(sample.sql)
+            let translation = try translate(sample.text)
             let text = translation.prettyText()
             XCTAssertFalse(text.isEmpty, "\(sample.title) produced no output")
             XCTAssertTrue(text.contains("{"), "\(sample.title): \(text)")
@@ -498,7 +498,7 @@ final class CalculusTests: XCTestCase {
 
     func testTranslatedQueriesAreSafe() throws {
         for sample in SampleQueries.all {
-            let translation = try translate(sample.sql)
+            let translation = try translate(sample.text)
             let unsafe = SafetyChecker.check(translation)
             XCTAssertTrue(unsafe.isEmpty,
                           "\(sample.title) produced unsafe formula(s): \(unsafe.map(\.message))")
@@ -589,7 +589,7 @@ final class CalculusTests: XCTestCase {
 
     func testEverySampleProducesSteps() throws {
         for sample in SampleQueries.all {
-            let translation = try translate(sample.sql)
+            let translation = try translate(sample.text)
             XCTAssertFalse(translation.steps.isEmpty, "\(sample.title) produced no steps")
         }
     }
@@ -709,7 +709,7 @@ final class CalculusTests: XCTestCase {
 
     func testLoweredQueriesAreSafe() throws {
         for sample in SampleQueries.all {
-            let lowered = try lowerToDRC(sample.sql)
+            let lowered = try lowerToDRC(sample.text)
             XCTAssertTrue(SafetyChecker.check(lowered).isEmpty,
                           "\(sample.title): \(SafetyChecker.check(lowered).map(\.message))")
         }
@@ -717,7 +717,7 @@ final class CalculusTests: XCTestCase {
 
     func testEverySampleLowersWithoutCrashing() throws {
         for sample in SampleQueries.all {
-            let text = try lowerToDRC(sample.sql).prettyText()
+            let text = try lowerToDRC(sample.text).prettyText()
             XCTAssertTrue(text.contains("{"), "\(sample.title): \(text)")
         }
     }
@@ -768,7 +768,7 @@ final class CalculusTests: XCTestCase {
 
     func testSimplificationIsIdempotent() throws {
         for sample in SampleQueries.all {
-            let once = CalcSimplifier.simplify(try translate(sample.sql).root).expression
+            let once = CalcSimplifier.simplify(try translate(sample.text).root).expression
             let twice = CalcSimplifier.simplify(once).expression
             XCTAssertEqual(once, twice, "\(sample.title) is not a fixpoint")
         }
@@ -776,7 +776,7 @@ final class CalculusTests: XCTestCase {
 
     func testSimplificationPreservesSafety() throws {
         for sample in SampleQueries.all {
-            var lowered = try lowerToDRC(sample.sql)
+            var lowered = try lowerToDRC(sample.text)
             lowered = lowered.simplifying()
             var checked = lowered
             checked.root = lowered.simplified
@@ -869,6 +869,79 @@ final class CalculusTests: XCTestCase {
                     "SELECT d, SUM(x) FROM T GROUP BY d HAVING SUM(x) > 1"] {
             XCTAssertTrue(SafetyChecker.check(try translate(sql)).isEmpty, sql)
         }
+    }
+
+    // MARK: - Bundled examples
+
+    func testEveryBundledQueryParses() throws {
+        for group in SampleQueries.groups {
+            for sample in group.queries {
+                XCTAssertNoThrow(try SQLParser.parseScript(sample.text),
+                                 "\(group.title) / \(sample.title) does not parse")
+            }
+        }
+    }
+
+    func testBenchmarkSamplesCarryTheirSchemaWhereBundled() throws {
+        for sample in SampleQueries.tpch.queries {
+            let script = try SQLParser.parseScript(sample.text)
+            XCTAssertFalse(script.declarations.isEmpty,
+                           "\(sample.title) should load its tables so the domain atoms are exact")
+        }
+    }
+
+    func testDeclaredBenchmarkTablesMakeTheDomainAtomsExact() throws {
+        // Every relation a TPC-H sample touches should have a declared arity —
+        // otherwise its DRC atoms carry an ellipsis and the sample teaches the
+        // wrong lesson.
+        for sample in SampleQueries.tpch.queries {
+            let translation = try lowerToDRC(sample.text)
+            let inferred = translation.schema.sortedRelations.filter { !$0.arityKnown }
+            XCTAssertTrue(inferred.isEmpty,
+                          "\(sample.title): \(inferred.map(\.name)) were not declared")
+        }
+    }
+
+    func testDomainVariableNamesAreDistinguishable() throws {
+        // TPC-H prefixes every column with its table, so naming from the prefix
+        // would give a sixteen-column relation sixteen variants of "l".
+        let translation = try lowerToDRC(
+            TPCHSchema.declarations(for: ["lineitem"]) + "\nSELECT l_orderkey, l_quantity FROM lineitem")
+        let text = CalcRenderer().inline(translation)
+        XCTAssertTrue(text.contains("o"), text)
+        XCTAssertTrue(text.contains("q"), text)
+        XCTAssertFalse(text.contains("l₁₅"), text)
+    }
+
+    // MARK: - Nothing is opaque without saying so
+
+    func testWindowFunctionIsReportedNotSilentlyCarried() throws {
+        let translation = try translate("""
+            SELECT RANK() OVER (PARTITION BY dept ORDER BY salary DESC) AS r FROM Employee
+            """)
+        XCTAssertTrue(translation.diagnostics.contains { $0.construct == "window function" },
+                      "a window function has no first-order expression and must say so")
+    }
+
+    func testCaseExpressionIsReported() throws {
+        let translation = try translate(
+            "SELECT CASE WHEN salary > 1 THEN 'high' ELSE 'low' END AS band FROM Employee")
+        XCTAssertTrue(translation.diagnostics.contains { $0.construct == "CASE" })
+    }
+
+    func testScalarSubqueryInTheSelectListIsReported() throws {
+        let translation = try translate(
+            "SELECT e.name, (SELECT COUNT(*) FROM Orders o) AS total FROM Employee e")
+        XCTAssertTrue(translation.diagnostics.contains {
+            $0.construct == "(sub-query) as a value"
+        })
+    }
+
+    func testCastCarriesNoWarningBecauseNothingIsLost() throws {
+        // A cast is an ordinary scalar function; it needs no caveat.
+        let translation = try translate("SELECT CAST(salary AS INTEGER) AS s FROM Employee")
+        XCTAssertFalse(translation.diagnostics.contains { $0.construct == "CASE" })
+        XCTAssertEqual(translation.diagnostics.warningCount, 0)
     }
 
     // MARK: - Export styles

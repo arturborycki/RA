@@ -967,7 +967,13 @@ final class TRCBuilder {
                               terms: args.map { term($0, scope: scope) })
 
         default:
-            // A bare column or other term used as a condition.
+            // A value used where a condition was expected: a bare column, a
+            // CASE, a window function. It has no boolean structure to translate,
+            // so it stays an atom — and says so.
+            diagnostics.append(.annotated(
+                "value as a condition",
+                "'\(expr.rendered)' has no boolean structure the calculus can take apart; kept as " +
+                "an opaque atom."))
             return .predicate(rendered: expr.rendered, terms: [term(expr, scope: scope)])
         }
     }
@@ -1127,11 +1133,41 @@ final class TRCBuilder {
         case let .list(items):
             return .application(name: "", args: items.map { term($0, scope: scope) }, distinct: false)
 
-        default:
-            // CASE, CAST, window functions, typed literals, intervals and
-            // sub-queries keep the pretty-printed SQL the algebra side already
-            // produces. They are terms, not conditions, so nothing is lost by
-            // carrying them verbatim.
+        // A cast, a typed literal and an interval are ordinary scalar values.
+        // Carrying them verbatim loses nothing, so they need no note.
+        case let .cast(inner, type):
+            return .application(name: "CAST", args: [term(inner, scope: scope),
+                                                     .opaque("AS \(type)")], distinct: false)
+        case .typedLiteral, .interval:
+            return .literal(expr.rendered)
+
+        case .caseExpression:
+            diagnostics.append(.extended(
+                "CASE",
+                "A conditional expression is not a term of the pure calculus. Written out, it is a " +
+                "disjunction of guarded cases; kept verbatim here."))
+            return .opaque(expr.rendered)
+
+        case .window:
+            diagnostics.append(.annotated(
+                "window function",
+                "A window function computes over a whole partition of the result, which " +
+                "first-order calculus cannot express at all. Kept verbatim; it is not translated."))
+            return .opaque(expr.rendered)
+
+        case .subquery:
+            diagnostics.append(.annotated(
+                "(sub-query) as a value",
+                "A sub-query used where a single value is expected is only expanded inside a " +
+                "comparison. Here it is kept verbatim rather than turned into a quantifier."))
+            return .opaque(expr.rendered)
+
+        // A condition appearing where a value was expected — legal in some
+        // dialects, but it is a truth value, not a term of the calculus.
+        case .between, .inList, .inSubquery, .exists, .isNull, .quantifiedComparison:
+            diagnostics.append(.annotated(
+                "condition as a value",
+                "'\(expr.rendered)' is a condition used where a value was expected; kept verbatim."))
             return .opaque(expr.rendered)
         }
     }

@@ -98,8 +98,16 @@ struct EditorView: View {
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             Menu {
-                ForEach(SampleQueries.all) { sample in
-                    Button(sample.title) { viewModel.load(sample: sample) }
+                ForEach(SampleQueries.groups) { group in
+                    Menu {
+                        Section(group.note) {
+                            ForEach(group.queries) { sample in
+                                Button(sample.title) { viewModel.load(sample: sample) }
+                            }
+                        }
+                    } label: {
+                        Text(group.title)
+                    }
                 }
             } label: {
                 Label("Examples", systemImage: "text.book.closed")

@@ -69,8 +69,9 @@ struct CalcSimplifier {
         var records: [Record] = []
         // Bounded: each pass strictly shrinks the formula or renames into a
         // smaller variable set, but the bound makes non-termination impossible
-        // rather than merely unlikely.
-        for _ in 0..<8 {
+        // rather than merely unlikely. Headroom for a TPC-H query, where one
+        // relation contributes sixteen domain variables.
+        for _ in 0..<16 {
             var changedThisRound = false
             for pass in passes {
                 let next = map(current, pass.apply)
@@ -111,14 +112,24 @@ struct CalcSimplifier {
             var vars = vars
             var body = unify(body, protected: protected)
 
-            for (lhs, rhs) in equalities(inSpineOf: body) {
-                guard case let .variable(a) = lhs, case let .variable(b) = rhs, a != b else { continue }
-                // Keep whichever the result exports; otherwise keep the first.
-                let keep = protected.contains(b) && !protected.contains(a) ? b : a
-                let drop = keep == a ? b : a
-                guard vars.contains(drop), !protected.contains(drop) else { continue }
-                body = substitute(body, drop, with: .variable(keep))
-                vars.removeAll { $0 == drop }
+            // Re-derive the equalities after every substitution: a chain
+            // `a = b ∧ b = c` rewrites the later links, so a single pass over a
+            // stale list would need one outer round per link to converge.
+            var substituted = true
+            while substituted {
+                substituted = false
+                for (lhs, rhs) in equalities(inSpineOf: body) {
+                    guard case let .variable(a) = lhs, case let .variable(b) = rhs,
+                          a != b else { continue }
+                    // Keep whichever the result exports; otherwise keep the first.
+                    let keep = protected.contains(b) && !protected.contains(a) ? b : a
+                    let drop = keep == a ? b : a
+                    guard vars.contains(drop), !protected.contains(drop) else { continue }
+                    body = substitute(body, drop, with: .variable(keep))
+                    vars.removeAll { $0 == drop }
+                    substituted = true
+                    break
+                }
             }
             body = dropTrivialEqualities(body)
             return vars.isEmpty ? body : .exists(vars, body)
