@@ -131,6 +131,46 @@ extension CalcFormula {
         }
     }
 
+    /// Variables not bound by any enclosing quantifier. This is what the safety
+    /// checker analyses and what set-operation merging must not re-quantify.
+    var freeVariables: Set<CalcVar> {
+        switch self {
+        case let .relationAtom(_, terms, _):
+            return terms.reduce(into: Set()) { $0.formUnion($1.variables) }
+        case let .comparison(lhs, _, rhs):
+            return lhs.variables.union(rhs.variables)
+        case let .and(parts), let .or(parts):
+            return parts.reduce(into: Set()) { $0.formUnion($1.freeVariables) }
+        case let .not(inner):
+            return inner.freeVariables
+        case let .exists(vars, body), let .forAll(vars, body):
+            return body.freeVariables.subtracting(vars)
+        case let .implies(lhs, rhs):
+            return lhs.freeVariables.union(rhs.freeVariables)
+        case let .predicate(_, terms):
+            return terms.reduce(into: Set()) { $0.formUnion($1.variables) }
+        case .constant:
+            return []
+        }
+    }
+
+    /// Whether an ∃ or ∀ appears anywhere inside — the marker that a sub-query
+    /// was expanded rather than kept opaque.
+    var containsQuantifier: Bool {
+        switch self {
+        case .exists, .forAll:
+            return true
+        case let .and(parts), let .or(parts):
+            return parts.contains { $0.containsQuantifier }
+        case let .not(inner):
+            return inner.containsQuantifier
+        case let .implies(lhs, rhs):
+            return lhs.containsQuantifier || rhs.containsQuantifier
+        case .relationAtom, .comparison, .predicate, .constant:
+            return false
+        }
+    }
+
     /// Conjoin, flattening nested `and` and dropping `TRUE`.
     static func conjunction(_ parts: [CalcFormula]) -> CalcFormula {
         var flat: [CalcFormula] = []
@@ -188,11 +228,26 @@ struct CalcExtension: Equatable {
     var rendered: String
 }
 
+/// How the result specification is written.
+///
+/// The tuple form is the general one — fresh result variables bound by equality,
+/// which is what merging two branches of a set operation needs. The compact form
+/// projects attributes of a free tuple variable directly and is available only
+/// when every result column has that shape; it is much the more readable of the
+/// two, so it is preferred wherever it applies.
+enum CalcResultStyle: Equatable {
+    /// `{ t.name, t.salary | … }`
+    case compact
+    /// `{ ⟨a, b⟩ | … }`
+    case tuple
+}
+
 /// A single set-builder expression: `{ result | formula }`.
 struct CalcQuery: Equatable {
     var dialect: CalcDialect
     var result: [ResultColumn]
     var formula: CalcFormula
+    var resultStyle: CalcResultStyle = .compact
     var extensions: [CalcExtension] = []
 }
 

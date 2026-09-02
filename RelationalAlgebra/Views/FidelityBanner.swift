@@ -76,7 +76,7 @@ private struct DiagnosticRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Text(diagnostic.fidelity.label)
+            Text(diagnostic.badge)
                 .font(.caption2.weight(.semibold))
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
@@ -97,6 +97,7 @@ private struct DiagnosticRow: View {
     }
 
     private var tint: Color {
+        if diagnostic.kind == .safety { return .red }
         switch diagnostic.fidelity {
         case .exact:     return .green
         case .extended:  return .orange

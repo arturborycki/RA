@@ -10,10 +10,11 @@
 //  and the AST still holds the structure (sub-query trees, predicate shape)
 //  that `RATranslator` flattens to strings on its way to `RANode`.
 //
-//  Scope of this phase: select–project–join with `WHERE`, plus set operations
-//  and `WITH` bindings composed at the expression level. Sub-query predicates
-//  are carried as opaque atoms and expanded into quantifiers in the next phase;
-//  every one of them raises a diagnostic, so nothing is silently approximated.
+//  Sub-query predicates become quantifiers, which is where the calculus says
+//  something the algebra cannot: `NOT EXISTS` is `¬∃`, `> ALL` is `∀`, and a
+//  correlated reference is simply a variable resolved in an enclosing scope.
+//  A sub-query that cannot live inside a formula — one with its own grouping,
+//  sort or row limit — is kept as an opaque atom and says so.
 //
 
 import Foundation
@@ -26,6 +27,7 @@ struct TRCTranslator {
         return CalcTranslation(dialect: .trc,
                                definitions: builder.definitions,
                                root: root,
+                               steps: builder.steps,
                                schema: schema,
                                diagnostics: builder.diagnostics.deduplicated)
     }
@@ -67,10 +69,38 @@ final class TRCBuilder {
     private let schema: QuerySchema
     private(set) var diagnostics: [CalcDiagnostic] = []
     private(set) var definitions: [CalcDefinition] = []
+    private(set) var steps: [CalcStep] = []
     private var usedNames = Set<String>()
+    /// Steps are recorded for the outermost expression only. A sub-query's own
+    /// construction is a detail of the step that introduced its quantifier, and
+    /// interleaving the two would make the derivation unreadable.
+    private var depth = 0
 
     init(schema: QuerySchema) {
         self.schema = schema
+    }
+
+    // MARK: Step recording
+
+    /// Run `body` one level down, so nothing inside it records a step.
+    private func nested<T>(_ body: () -> T) -> T {
+        depth += 1
+        defer { depth -= 1 }
+        return body()
+    }
+
+    private func emitStep(title: String, clause: String, explanation: String,
+                          expression: CalcExpression, added: String? = nil) {
+        guard depth == 0 else { return }
+        steps.append(CalcStep(index: steps.count + 1, title: title, clause: clause,
+                              explanation: explanation, expression: expression, added: added))
+    }
+
+    /// The expression as it stands mid-derivation: the conjuncts built so far,
+    /// with a result specification only once the SELECT list has been read.
+    private func snapshot(_ conjuncts: [CalcFormula], result: [ResultColumn]) -> CalcExpression {
+        .query(CalcQuery(dialect: .trc, result: result,
+                         formula: CalcFormula.conjunction(conjuncts)))
     }
 
     // MARK: Query dispatch
@@ -81,8 +111,8 @@ final class TRCBuilder {
             return .query(buildSelect(stmt, outer: outer))
 
         case let .setOperation(op, left, right, all):
-            let lhs = build(left, outer: outer)
-            let rhs = build(right, outer: outer)
+            let lhs = nested { build(left, outer: outer) }
+            let rhs = nested { build(right, outer: outer) }
             let calcOp: CalcSetOperator
             switch op {
             case .union:     calcOp = .union
@@ -94,18 +124,118 @@ final class TRCBuilder {
                     "\(op.rawValue) ALL",
                     "A calculus expression denotes a set, so duplicates cannot be preserved."))
             }
+
+            emitStep(title: "Left branch", clause: op.rawValue,
+                     explanation: "Translate the first sub-query on its own.",
+                     expression: lhs)
+            emitStep(title: "Right branch", clause: op.rawValue,
+                     explanation: "Translate the second sub-query on its own.",
+                     expression: rhs)
+
+            if let merged = merge(calcOp, lhs, rhs) {
+                let connective = calcOp == .union ? CalcSymbol.or : CalcSymbol.and
+                emitStep(title: "Combine (\(connective))", clause: op.rawValue,
+                         explanation: mergeExplanation(calcOp),
+                         expression: .query(merged))
+                return .query(merged)
+            }
+
             diagnostics.append(.info(
                 op.rawValue,
-                "Shown as a set operation on two calculus expressions. A later version merges " +
-                "them into one formula over shared result variables."))
-            return .setOperation(op: calcOp, left: lhs, right: rhs)
+                "The branches differ in shape (or carry operators the calculus cannot express), " +
+                "so they are shown as a set operation on two expressions rather than merged " +
+                "into one formula."))
+            let composed = CalcExpression.setOperation(op: calcOp, left: lhs, right: rhs)
+            emitStep(title: "Combine (\(calcOp.glyph))", clause: op.rawValue,
+                     explanation: "Apply the set operation to the two results.",
+                     expression: composed)
+            return composed
 
         case let .with(ctes, body):
             for cte in ctes {
-                definitions.append(CalcDefinition(name: cte.name,
-                                                  expression: build(cte.query, outer: outer)))
+                let expression = nested { build(cte.query, outer: outer) }
+                definitions.append(CalcDefinition(name: cte.name, expression: expression))
+                emitStep(title: "Common table expression", clause: "WITH \(cte.name)",
+                         explanation: "Define '\(cte.name)'. It is referenced as a relation below.",
+                         expression: expression)
             }
             return build(body, outer: outer)
+        }
+    }
+
+    // MARK: - Set-operation merging
+
+    /// Merge two branches into a single formula over shared result variables:
+    /// `{ ⟨a⟩ | ∃t ( X(t) ∧ t.a = a ) ∨ ∃u ( Y(u) ∧ u.a = a ) }`.
+    ///
+    /// Returns `nil` when the branches cannot be lined up — different result
+    /// arities, or operators (sort, grouping, a nested set operation) that have
+    /// no place inside a formula.
+    private func merge(_ op: CalcSetOperator,
+                       _ left: CalcExpression, _ right: CalcExpression) -> CalcQuery? {
+        guard case let .query(lq) = left, case let .query(rq) = right,
+              lq.extensions.isEmpty, rq.extensions.isEmpty,
+              !lq.result.isEmpty, lq.result.count == rq.result.count else { return nil }
+
+        let resultVars = lq.result.enumerated().map { index, column in
+            allocate(preferred: column.name ?? outputName(of: column.term) ?? "a\(TRCBuilder.subscriptNumber(index + 1))",
+                     relation: nil)
+        }
+
+        let leftSide = branchFormula(lq, resultVars: resultVars)
+        let rightSide = branchFormula(rq, resultVars: resultVars)
+
+        let formula: CalcFormula
+        switch op {
+        case .union:      formula = .disjunction([leftSide, rightSide])
+        case .intersect:  formula = .conjunction([leftSide, rightSide])
+        // The positive left side range-restricts the result variables, which is
+        // what keeps the negated right side safe.
+        case .difference: formula = .conjunction([leftSide, .not(rightSide)])
+        }
+
+        return CalcQuery(dialect: .trc,
+                         result: resultVars.map { ResultColumn(term: .variable($0)) },
+                         formula: formula,
+                         resultStyle: .tuple)
+    }
+
+    /// One branch of a merged set operation: its own formula, plus an equality
+    /// binding each of its output columns to the shared result variable, with
+    /// everything it declared quantified away.
+    private func branchFormula(_ query: CalcQuery, resultVars: [CalcVar]) -> CalcFormula {
+        var parts = query.formula.conjuncts
+        for (index, column) in query.result.enumerated() {
+            parts.append(.comparison(lhs: column.term, op: "=", rhs: .variable(resultVars[index])))
+        }
+        let body = CalcFormula.conjunction(parts)
+        let shared = Set(resultVars)
+        // Only free variables get quantified here: anything already under an ∃
+        // inside the branch must not be bound a second time.
+        let free = body.freeVariables
+        let declared = orderedVariables(of: body).filter { free.contains($0) && !shared.contains($0) }
+        return declared.isEmpty ? body : .exists(declared, body)
+    }
+
+    private func mergeExplanation(_ op: CalcSetOperator) -> String {
+        switch op {
+        case .union:
+            return "Both branches feed the same result variables, so the union is a disjunction: " +
+                   "a tuple qualifies if either side produces it."
+        case .intersect:
+            return "Both branches must produce the same tuple, so the intersection is a conjunction."
+        case .difference:
+            return "Keep tuples the first branch produces and the second does not — a conjunction " +
+                   "with a negation. The positive side range-restricts the result variables, which " +
+                   "is what keeps the negation safe."
+        }
+    }
+
+    private func outputName(of term: CalcTerm) -> String? {
+        switch term {
+        case let .attribute(_, name): return name
+        case let .variable(v):        return v.name
+        default:                      return nil
         }
     }
 
@@ -114,6 +244,7 @@ final class TRCBuilder {
     private func buildSelect(_ stmt: SelectStatement, outer: TupleScope) -> CalcQuery {
         var scope = TupleScope(nestedIn: outer)
         var conjuncts: [CalcFormula] = []
+        let renderer = CalcRenderer()
 
         // 1. FROM and JOIN declare one tuple variable per relation. A comma in
         //    FROM is the cartesian product, and needs no operator here: two
@@ -121,18 +252,43 @@ final class TRCBuilder {
         for table in stmt.from {
             conjuncts.append(atom(for: table, into: &scope))
         }
+        let fromAtoms = conjuncts
+        emitStep(title: "Range variables", clause: "FROM",
+                 explanation: rangeVariableExplanation(scope.localVariables, commaJoined: stmt.from.count > 1),
+                 expression: snapshot(conjuncts, result: []),
+                 added: fromAtoms.map { renderer.inline($0) }.joined(separator: "  "))
+
         for join in stmt.joins {
-            conjuncts.append(atom(for: join.table, into: &scope))
-            conjuncts.append(contentsOf: joinConditions(join, scope: scope))
+            let joinedAtom = atom(for: join.table, into: &scope)
+            let conditions = joinConditions(join, scope: scope)
+            conjuncts.append(joinedAtom)
+            conjuncts.append(contentsOf: conditions)
+            let added = ([joinedAtom] + conditions).map { renderer.inline($0) }.joined(separator: "  ")
+            emitStep(title: "Join", clause: "\(join.kind.rawValue) JOIN",
+                     explanation: conditions.isEmpty
+                        ? "Add the joined relation. With no condition this is a cartesian product."
+                        : "Add the joined relation; its ON condition becomes an ordinary conjunct — " +
+                          "a join is a cross product with a condition, and the calculus writes it that way.",
+                     expression: snapshot(conjuncts, result: []), added: added)
         }
 
         // 2. WHERE conjoins onto the same formula.
         if let whereClause = stmt.whereClause {
-            conjuncts.append(formula(whereClause, scope: scope))
+            let condition = formula(whereClause, scope: scope)
+            conjuncts.append(condition)
+            emitStep(title: "Selection", clause: "WHERE",
+                     explanation: whereExplanation(condition),
+                     expression: snapshot(conjuncts, result: []),
+                     added: renderer.inline(condition))
         }
 
         // 3. The SELECT list becomes the result specification.
         let result = resultColumns(stmt, scope: scope)
+        emitStep(title: "Result specification", clause: "SELECT",
+                 explanation: "The SELECT list becomes the terms to the left of the bar — what the " +
+                              "expression denotes, rather than an operator applied to a relation.",
+                 expression: snapshot(conjuncts, result: result),
+                 added: result.map { $0.term.plainText }.joined(separator: ", "))
 
         // 4. Everything SQL asks for that first-order calculus cannot express.
         let extensions = self.extensions(stmt)
@@ -140,9 +296,55 @@ final class TRCBuilder {
 
         // 5. Variables the result does not export are existentially quantified,
         //    over just the conjuncts that mention them.
-        let body = quantifyNonResultVariables(CalcFormula.conjunction(conjuncts), result: result)
+        let unquantified = CalcFormula.conjunction(conjuncts)
+        let body = quantifyNonResultVariables(unquantified, result: result)
+        let query = CalcQuery(dialect: .trc, result: result, formula: body, extensions: extensions)
 
-        return CalcQuery(dialect: .trc, result: result, formula: body, extensions: extensions)
+        if body != unquantified {
+            let bound = unquantified.freeVariables
+                .subtracting(result.reduce(into: Set<CalcVar>()) { $0.formUnion($1.term.variables) })
+            emitStep(title: "Quantification", clause: "SELECT",
+                     explanation: "Variables the result does not export are existentially " +
+                                  "quantified, over only the conjuncts that mention them: " +
+                                  "\(list(bound)) appear\(bound.count == 1 ? "s" : "") in the " +
+                                  "condition but not in the answer.",
+                     expression: .query(query))
+        } else if !extensions.isEmpty {
+            emitStep(title: "Outside the calculus", clause: extensions.map(\.rendered).joined(separator: ", "),
+                     explanation: "These operators have no first-order expression, so they are " +
+                                  "annotated outside the braces rather than faked inside them.",
+                     expression: .query(query))
+        }
+
+        return query
+    }
+
+    private func rangeVariableExplanation(_ variables: [CalcVar], commaJoined: Bool) -> String {
+        let names = list(variables)
+        let base = variables.count == 1
+            ? "Declare the tuple variable \(names), ranging over the relation in FROM. " +
+              "A SQL alias already is a tuple variable, so the alias is used verbatim."
+            : "Declare one tuple variable per FROM entry: \(names)."
+        guard commaJoined else { return base }
+        return base + " A comma join needs no operator here — two unrelated atoms in one " +
+                      "conjunction already mean every combination of their rows."
+    }
+
+    private func whereExplanation(_ condition: CalcFormula) -> String {
+        if condition.containsQuantifier {
+            return "The WHERE predicate is conjoined. Its sub-query becomes a quantifier — this is " +
+                   "what the calculus can say and the algebra cannot, which has no ∃ or ∀ at all."
+        }
+        return "The WHERE predicate is conjoined onto the same formula. There is no separate " +
+               "selection operator: filtering is just another condition."
+    }
+
+    private func list(_ variables: [CalcVar]) -> String { list(Set(variables)) }
+
+    private func list(_ variables: Set<CalcVar>) -> String {
+        let names = variables.map(\.name).sorted()
+        guard names.count > 1 else { return names.first ?? "none" }
+        return names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
     }
 
     // MARK: FROM / JOIN
@@ -323,13 +525,15 @@ final class TRCBuilder {
         let conjuncts = body.conjuncts
         guard !conjuncts.isEmpty else { return body }
 
-        let bound = body.variables.subtracting(free)
+        // Free variables only. A sub-query expanded into `∃u ( … )` has already
+        // bound `u`, and quantifying it again here would capture it twice.
+        let bound = body.freeVariables.subtracting(free)
         guard !bound.isEmpty else { return body }
 
         var outerParts: [CalcFormula] = []
         var innerParts: [CalcFormula] = []
         for conjunct in conjuncts {
-            if conjunct.variables.isDisjoint(with: bound) {
+            if conjunct.freeVariables.isDisjoint(with: bound) {
                 outerParts.append(conjunct)
             } else {
                 innerParts.append(conjunct)
@@ -414,6 +618,9 @@ final class TRCBuilder {
                                   terms: [operand])
             }
             if TRCBuilder.comparisonOperators.contains(op) {
+                if let expanded = scalarSubqueryComparison(op: op, lhs: lhs, rhs: rhs, scope: scope) {
+                    return expanded
+                }
                 return .comparison(lhs: term(lhs, scope: scope),
                                    op: TRCBuilder.canonical(op),
                                    rhs: term(rhs, scope: scope))
@@ -451,20 +658,46 @@ final class TRCBuilder {
             return .predicate(rendered: "\(operand.plainText) IS \(negated ? "NOT " : "")NULL",
                               terms: [operand])
 
-        case let .exists(_, negated):
-            diagnostics.append(.annotated(
-                negated ? "NOT EXISTS" : "EXISTS",
-                "Sub-query predicates become ∃ / ¬∃ quantifiers in the next version; shown as an " +
-                "opaque atom for now."))
-            return .predicate(rendered: "\(negated ? "¬" : "")∃ (…)", terms: [])
+        case let .exists(query, negated):
+            let construct = negated ? "NOT EXISTS" : "EXISTS"
+            guard let block = subqueryBlock(query, outer: scope, construct: construct),
+                  !block.variables.isEmpty else {
+                return opaqueSubquery(rendered: "\(negated ? "¬" : "")∃ (…)", terms: [])
+            }
+            let quantified = CalcFormula.exists(block.variables, block.formula)
+            return negated ? .not(quantified) : quantified
 
-        case let .inSubquery(value, _, negated):
-            diagnostics.append(.annotated(
-                negated ? "NOT IN (sub-query)" : "IN (sub-query)",
-                "Sub-query predicates become ∃ / ¬∃ quantifiers in the next version; shown as an " +
-                "opaque atom for now."))
+        case let .inSubquery(value, query, negated):
+            let construct = negated ? "NOT IN (sub-query)" : "IN (sub-query)"
             let v = term(value, scope: scope)
-            return .predicate(rendered: "\(v.plainText) \(negated ? "∉" : "∈") (…)", terms: [v])
+            guard let block = subqueryBlock(query, outer: scope, construct: construct),
+                  let output = block.singleOutput(construct: construct, report: &diagnostics),
+                  !block.variables.isEmpty else {
+                return opaqueSubquery(rendered: "\(v.plainText) \(negated ? "∉" : "∈") (…)", terms: [v])
+            }
+            // `x IN (SELECT y …)` is `∃u ( … ∧ u.y = x )`.
+            let body = CalcFormula.conjunction([block.formula,
+                                                .comparison(lhs: output, op: "=", rhs: v)])
+            let quantified = CalcFormula.exists(block.variables, body)
+            return negated ? .not(quantified) : quantified
+
+        case let .quantifiedComparison(value, op, quantifier, query):
+            let construct = "\(op) \(quantifier.rawValue) (sub-query)"
+            let v = term(value, scope: scope)
+            guard let block = subqueryBlock(query, outer: scope, construct: construct),
+                  let output = block.singleOutput(construct: construct, report: &diagnostics),
+                  !block.variables.isEmpty else {
+                return opaqueSubquery(
+                    rendered: "\(v.plainText) \(op) \(quantifier.rawValue) (…)", terms: [v])
+            }
+            let comparison = CalcFormula.comparison(lhs: v, op: TRCBuilder.canonical(op), rhs: output)
+            switch quantifier {
+            case .all:
+                // Every row of the sub-query must satisfy it: a guarded ∀.
+                return .forAll(block.variables, .implies(block.formula, comparison))
+            case .any:
+                return .exists(block.variables, .conjunction([block.formula, comparison]))
+            }
 
         case let .boolLiteral(value):
             return .constant(value)
@@ -477,6 +710,126 @@ final class TRCBuilder {
             // A bare column or other term used as a condition.
             return .predicate(rendered: expr.rendered, terms: [term(expr, scope: scope)])
         }
+    }
+
+    // MARK: - Sub-queries → quantifiers
+
+    /// A sub-query lowered into something a quantifier can bind: the tuple
+    /// variables it declares, the formula over them, and the terms its select
+    /// list publishes.
+    private struct SubqueryBlock {
+        var variables: [CalcVar]
+        var formula: CalcFormula
+        var outputs: [CalcTerm]
+
+        /// The single column a membership or comparison test needs. A `*` or a
+        /// multi-column select list has no such column, and guessing one would
+        /// silently change the predicate.
+        func singleOutput(construct: String, report diagnostics: inout [CalcDiagnostic]) -> CalcTerm? {
+            guard outputs.count == 1 else {
+                diagnostics.append(.annotated(
+                    construct,
+                    outputs.isEmpty
+                        ? "The sub-query selects * , so the column being compared cannot be named."
+                        : "The sub-query selects \(outputs.count) columns; a comparison needs one."))
+                return nil
+            }
+            return outputs[0]
+        }
+    }
+
+    /// Lower a sub-query for use inside a quantifier, in a scope nested in the
+    /// caller's — which is what makes a correlated reference correlated: a
+    /// column resolving to an enclosing variable simply keeps referring to it.
+    ///
+    /// Returns `nil` for a sub-query carrying anything that cannot live inside a
+    /// formula, in which case the caller keeps it opaque and the reason is
+    /// reported rather than swallowed.
+    private func subqueryBlock(_ query: SQLQuery, outer: TupleScope,
+                               construct: String) -> SubqueryBlock? {
+        guard case let .select(stmt) = query else {
+            diagnostics.append(.annotated(
+                construct,
+                "The sub-query is a set operation or a WITH block; only a plain SELECT can be " +
+                "expanded into a quantifier."))
+            return nil
+        }
+        guard stmt.groupBy.isEmpty, stmt.having == nil, stmt.orderBy.isEmpty, stmt.limit == nil,
+              !stmt.projections.contains(where: { $0.isAggregate }) else {
+            diagnostics.append(.annotated(
+                construct,
+                "The sub-query has its own grouping, sort or row limit, none of which can appear " +
+                "inside a formula; kept as an opaque atom."))
+            return nil
+        }
+        guard !stmt.from.isEmpty else { return nil }
+
+        var scope = TupleScope(nestedIn: outer)
+        var conjuncts: [CalcFormula] = []
+        for table in stmt.from {
+            conjuncts.append(atom(for: table, into: &scope))
+        }
+        for join in stmt.joins {
+            conjuncts.append(atom(for: join.table, into: &scope))
+            conjuncts.append(contentsOf: joinConditions(join, scope: scope))
+        }
+        if let whereClause = stmt.whereClause {
+            conjuncts.append(formula(whereClause, scope: scope))
+        }
+
+        let outputs: [CalcTerm] = stmt.projections.compactMap { item in
+            guard case let .expression(expr, _) = item else { return nil }
+            return term(expr, scope: scope)
+        }
+        // A select list of only `*` publishes no nameable column.
+        let publishesStar = stmt.projections.contains { item -> Bool in
+            if case .expression = item { return false }
+            return true
+        }
+
+        return SubqueryBlock(variables: scope.localVariables,
+                             formula: CalcFormula.conjunction(conjuncts),
+                             outputs: publishesStar ? [] : outputs)
+    }
+
+    /// `x = (SELECT y FROM R WHERE p)` on either side of the operator.
+    private func scalarSubqueryComparison(op: String, lhs: Expression, rhs: Expression,
+                                          scope: TupleScope) -> CalcFormula? {
+        if let query = subquery(in: rhs) {
+            return scalarComparison(value: lhs, op: op, query: query, flipped: false, scope: scope)
+        }
+        if let query = subquery(in: lhs) {
+            return scalarComparison(value: rhs, op: op, query: query, flipped: true, scope: scope)
+        }
+        return nil
+    }
+
+    private func scalarComparison(value: Expression, op: String, query: SQLQuery,
+                                  flipped: Bool, scope: TupleScope) -> CalcFormula? {
+        let construct = "\(op) (sub-query)"
+        guard let block = subqueryBlock(query, outer: scope, construct: construct),
+              let output = block.singleOutput(construct: construct, report: &diagnostics),
+              !block.variables.isEmpty else { return nil }
+        let v = term(value, scope: scope)
+        let comparison: CalcFormula = flipped
+            ? .comparison(lhs: output, op: TRCBuilder.canonical(op), rhs: v)
+            : .comparison(lhs: v, op: TRCBuilder.canonical(op), rhs: output)
+        return .exists(block.variables, .conjunction([block.formula, comparison]))
+    }
+
+    private func subquery(in expr: Expression) -> SQLQuery? {
+        switch expr {
+        case let .subquery(query): return query
+        case let .paren(inner):    return subquery(in: inner)
+        default:                   return nil
+        }
+    }
+
+    /// The fallback when a sub-query could not be expanded. The reason has
+    /// already been reported by `subqueryBlock`; this only records that the
+    /// resulting atom is opaque.
+    private func opaqueSubquery(rendered: String, terms: [CalcTerm]) -> CalcFormula {
+        .predicate(rendered: rendered, terms: terms)
     }
 
     // MARK: Expressions → terms
@@ -561,7 +914,7 @@ final class TRCBuilder {
 
     /// A mnemonic variable name derived from the relation, uniqued against the
     /// names already handed out: Employee → e, a second Employee → e₁.
-    private func allocate(preferred: String, relation: String) -> CalcVar {
+    private func allocate(preferred: String, relation: String?) -> CalcVar {
         var name = preferred.isEmpty ? "t" : preferred
         if usedNames.contains(name) {
             var suffix = 1

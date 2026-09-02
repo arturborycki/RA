@@ -117,8 +117,11 @@ final class AppViewModel: ObservableObject {
         let inference = SchemaInference.infer(query)
         var calculus = TRCTranslator().translate(query, schema: inference.schema)
         // Schema ambiguities are as much a fidelity note as a translation
-        // fallback, so they belong in the same banner.
-        calculus.diagnostics = (inference.diagnostics + calculus.diagnostics).deduplicated
+        // fallback, and safety findings belong beside them: all three are
+        // reasons not to take the rendered formula entirely at face value.
+        calculus.diagnostics = (inference.diagnostics
+                                + calculus.diagnostics
+                                + SafetyChecker.check(calculus)).deduplicated
         return TranslationBundle(ra: RATranslator().translate(query),
                                  calculus: calculus,
                                  schema: inference.schema)

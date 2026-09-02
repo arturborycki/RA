@@ -61,6 +61,26 @@ enum SampleQueries {
             """),
 
         SampleQuery(
+            title: "Division (NOT EXISTS)",
+            sql: """
+            SELECT s.name
+            FROM Student s
+            WHERE NOT EXISTS (
+              SELECT c.id FROM Course c
+              WHERE NOT EXISTS (
+                SELECT e.sid FROM Enrolled e
+                WHERE e.sid = s.id AND e.cid = c.id));
+            """),
+
+        SampleQuery(
+            title: "Sub-query (IN)",
+            sql: """
+            SELECT c.name
+            FROM Customer c
+            WHERE c.id IN (SELECT o.customer_id FROM Orders o WHERE o.total > 1000);
+            """),
+
+        SampleQuery(
             title: "Set operation (UNION)",
             sql: """
             SELECT name FROM Author

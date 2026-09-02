@@ -129,7 +129,10 @@ struct ResultsView: View {
             case .diagram: TreeView()
             }
         case .trc:
-            CalculusFormulaView()
+            switch activeTab {
+            case .steps:   CalculusStepsView()
+            default:       CalculusFormulaView()
+            }
         }
     }
 }

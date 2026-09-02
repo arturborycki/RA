@@ -125,17 +125,24 @@ struct CalcRenderer {
         return "\(parts)  applied to"
     }
 
-    private func resultSpec(_ query: CalcQuery) -> String {
-        guard !query.result.isEmpty else { return "" }
+    func resultSpec(_ query: CalcQuery) -> String {
+        // Mid-derivation the SELECT list has not been read yet.
+        guard !query.result.isEmpty else { return "…" }
         let columns = query.result.map { column -> String in
             guard let name = column.name, name != column.term.plainText else {
                 return column.term.plainText
             }
             return "\(column.term.plainText) \(CalcSymbol.renameArrow) \(name)"
         }
-        // A single attribute reads better bare; several are a tuple.
-        if columns.count == 1 { return columns[0] }
-        return columns.joined(separator: ", ")
+        let joined = columns.joined(separator: ", ")
+        switch query.resultStyle {
+        case .compact:
+            return joined
+        case .tuple:
+            // Fresh result variables bound by equality — the general form, and
+            // the only one that can line two set-operation branches up.
+            return "\(CalcSymbol.openTuple)\(joined)\(CalcSymbol.closeTuple)"
+        }
     }
 
     // MARK: Formulas — single line
@@ -231,10 +238,14 @@ struct CalcRenderer {
 
         switch formula {
         case let .and(parts):
-            return joinBroken(parts, glyph: CalcSymbol.and, own: precedence(formula), width: width)
+            return joinBroken(parts, glyph: CalcSymbol.and,
+                              bracketBelow: precedence(formula), width: width)
 
         case let .or(parts):
-            return joinBroken(parts, glyph: CalcSymbol.or, own: precedence(formula), width: width)
+            // Same bracketing rule as the inline renderer: a ∧ inside a ∨ gets
+            // brackets even though it binds tighter.
+            return joinBroken(parts, glyph: CalcSymbol.or,
+                              bracketBelow: precedence(formula) + 2, width: width)
 
         case let .not(inner):
             return "\(CalcSymbol.not)(\n" + indent(prettyFormula(inner, width: width - 4), by: 1) + "\n)"
@@ -266,10 +277,10 @@ struct CalcRenderer {
     /// One operand per line with the connective leading each continuation, so
     /// the ∧ / ∨ column lines up down the left edge and the structure is legible.
     private func joinBroken(_ parts: [CalcFormula], glyph: String,
-                            own: Int, width: Int) -> String {
+                            bracketBelow: Int, width: Int) -> String {
         var lines: [String] = []
         for (index, part) in parts.enumerated() {
-            let needsParens = precedence(part) < own
+            let needsParens = precedence(part) < bracketBelow
             var rendered = prettyFormula(part, width: width - 2)
             if needsParens {
                 rendered = rendered.contains("\n")

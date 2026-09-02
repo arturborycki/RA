@@ -55,9 +55,12 @@ A **notation** picker switches the results pane between relational algebra and
 - **Diagram** — the expression drawn as an operator tree (pinch to zoom, drag to
   pan).
 
-### Tuple relational calculus
+### Tuple relational calculus — two views
 
-The same query as a set-builder expression, line-broken so it stays readable:
+- **Steps** — the construction sequence. Unlike the algebra's chain of named
+  intermediate relations, this builds *one* formula: each card shows the whole
+  expression as it stands and calls out what that step added.
+- **Formula** — the finished expression, line-broken so it stays readable.
 
 ```
 { e.name | Employee(e) ∧ ∃d ( Department(d) ∧ e.dept_id = d.id ∧ d.location = 'Berlin' ) }
@@ -67,6 +70,46 @@ A SQL alias *is* a tuple variable, so `FROM Employee e` becomes `Employee(e)`
 directly; variables the result does not export are existentially quantified over
 just the conjuncts that mention them. `DISTINCT` needs no operator at all — a
 calculus expression denotes a set — where the algebra needs δ.
+
+#### Sub-queries become quantifiers
+
+This is where the calculus says something the algebra cannot — relational
+algebra has no ∃ or ∀ at all, so the RA view can only render these as an opaque
+`σ[NOT EXISTS (…)]`:
+
+| SQL | TRC |
+|-----|-----|
+| `EXISTS (SELECT … FROM R WHERE p)` | `∃u ( R(u) ∧ p )` |
+| `NOT EXISTS (…)` | `¬∃u ( R(u) ∧ p )` |
+| `x IN (SELECT y FROM R)` | `∃u ( R(u) ∧ u.y = x )` |
+| `x > ALL (SELECT y FROM R)` | `∀u ( R(u) → x > u.y )` |
+| `x > ANY \| SOME (SELECT y FROM R)` | `∃u ( R(u) ∧ x > u.y )` |
+| `x = (SELECT y FROM R WHERE p)` | `∃u ( R(u) ∧ p ∧ x = u.y )` |
+
+Correlation needs no machinery of its own: a column that resolves to a variable
+in an enclosing scope simply keeps referring to it. So the classic division query
+comes out directly —
+
+```
+{ s.name | Student(s) ∧ ¬∃c ( Course(c) ∧ ¬∃e ( Enrolled(e) ∧ e.sid = s.id ∧ e.cid = c.id ) ) }
+```
+
+Set operations merge into a single formula over shared result variables, where
+`UNION` is a disjunction, `INTERSECT` a conjunction, and `EXCEPT` a conjunction
+with a negation:
+
+```
+{ ⟨a⟩ | ∃x ( X(x) ∧ x.a = a ) ∧ ¬∃y ( Y(y) ∧ y.a = a ) }
+```
+
+#### Safety
+
+Relational calculus admits *unsafe* expressions — `{ t | ¬R(t) }` denotes every
+tuple in the universe that is not in R, an answer that depends on the infinite
+domain rather than on the database. Every formula is checked for
+domain-independence: a variable is safe when a positive relation atom restricts
+its range, and neither negation nor comparison does that. Findings appear in the
+banner marked **unsafe**.
 
 Alongside the formula the view lists each **relation** the query ranges over,
 with its attributes and where they came from (declared, from a CTE, or inferred
@@ -184,7 +227,7 @@ second translator.
 | **Models** | `Models/SQLAST.swift`, `Models/RANode.swift`, `Models/CalcIR.swift`, `Models/Schema.swift`, `Models/CalcDiagnostic.swift` |
 | **Parser** | `Parser/Token.swift`, `Parser/Lexer.swift`, `Parser/SQLParser.swift` |
 | **Translator** | `Translator/RATranslator.swift`, `RAStep.swift`, `ExpressionRendering.swift` |
-| **Calculus** | `Calculus/SchemaInference.swift`, `TRCTranslator.swift`, `CalcRenderer.swift`, `CalcTranslation.swift` |
+| **Calculus** | `Calculus/SchemaInference.swift`, `TRCTranslator.swift`, `SafetyChecker.swift`, `CalcRenderer.swift`, `CalcStep.swift`, `CalcTranslation.swift` |
 | **View model** | `ViewModel/AppViewModel.swift`, `ViewModel/SampleQueries.swift` |
 | **UI** | `App/…`, `Views/…` (editor, steps, formula, tree, calculus, banner) |
 
@@ -223,9 +266,10 @@ positive relation atom.
 
 - The translator models SQL's **logical** operator order for teaching purposes;
   it is not a query optimizer and does not push selections down.
-- The calculus back end currently covers select–project–join with `WHERE`
-  exactly. Sub-query predicates (`EXISTS`, `IN (SELECT …)`) are carried as opaque
-  atoms and become ∃ / ∀ quantifiers in the next phase; each one raises a note.
+- A sub-query carrying its own `GROUP BY`, `ORDER BY` or `LIMIT` cannot live
+  inside a formula, so it is kept as an opaque atom and the reason is reported.
+- `¬∃x ( R(x) ∧ ¬φ )` is not yet rewritten to the equivalent `∀x ( R(x) → φ )`;
+  that rewrite belongs to the simplifier, alongside equality unification.
 - Domain relational calculus is not generated yet: its atoms are positional, so
   it needs `CREATE TABLE` parsing to know each relation's arity and column order.
   See [`docs/DESIGN-CALCULUS.md`](docs/DESIGN-CALCULUS.md).

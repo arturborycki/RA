@@ -170,6 +170,8 @@ final class SchemaInferenceEngine {
             collect(value, scope: scope); walk(query, scope: scope)
         case let .exists(query, _):
             walk(query, scope: scope)
+        case let .quantifiedComparison(value, _, _, query):
+            collect(value, scope: scope); walk(query, scope: scope)
         case let .isNull(inner, _):
             collect(inner, scope: scope)
         case let .list(items):

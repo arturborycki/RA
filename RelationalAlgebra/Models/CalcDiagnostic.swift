@@ -42,8 +42,18 @@ enum DiagnosticSeverity: Equatable {
     case warning
 }
 
+/// Which axis a diagnostic is about. Fidelity is how faithfully SQL was
+/// expressed in the calculus; safety is whether the resulting formula is
+/// domain-independent. They are independent — an exactly-translated formula can
+/// still be unsafe — so they are not folded into one enum.
+enum DiagnosticKind: Equatable {
+    case fidelity
+    case safety
+}
+
 struct CalcDiagnostic: Identifiable, Equatable {
     let id = UUID()
+    var kind: DiagnosticKind = .fidelity
     var severity: DiagnosticSeverity
     var fidelity: Fidelity
     /// The SQL construct responsible, e.g. "LEFT JOIN", "COUNT(*)", "ORDER BY".
@@ -51,8 +61,13 @@ struct CalcDiagnostic: Identifiable, Equatable {
     /// What the reader needs to know, in one sentence.
     var message: String
 
+    /// The short word shown on the badge.
+    var badge: String {
+        kind == .safety ? "unsafe" : fidelity.label
+    }
+
     static func == (lhs: CalcDiagnostic, rhs: CalcDiagnostic) -> Bool {
-        lhs.severity == rhs.severity && lhs.fidelity == rhs.fidelity &&
+        lhs.kind == rhs.kind && lhs.severity == rhs.severity && lhs.fidelity == rhs.fidelity &&
         lhs.construct == rhs.construct && lhs.message == rhs.message
     }
 
@@ -66,6 +81,13 @@ struct CalcDiagnostic: Identifiable, Equatable {
 
     static func annotated(_ construct: String, _ message: String) -> CalcDiagnostic {
         CalcDiagnostic(severity: .warning, fidelity: .annotated, construct: construct, message: message)
+    }
+
+    /// The formula is domain-dependent: its answer would depend on the infinite
+    /// universe of possible values rather than on the database.
+    static func unsafe(_ construct: String, _ message: String) -> CalcDiagnostic {
+        CalcDiagnostic(kind: .safety, severity: .warning, fidelity: .exact,
+                       construct: construct, message: message)
     }
 }
 

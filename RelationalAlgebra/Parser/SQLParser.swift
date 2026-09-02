@@ -486,14 +486,34 @@ final class SQLParser {
             return .binary(op: op, lhs: left, rhs: pattern)
         }
 
-        // Standard comparison operators.
+        // Standard comparison operators, optionally quantified over a
+        // sub-query: `x > ALL (…)`, `x > ANY (…)`, `x > SOME (…)`.
         if check(kind: .op), isComparisonOperator(current.text) {
             let op = advance().text
+            if let quantifier = matchSubqueryQuantifier() {
+                _ = try expect(kind: .leftParen, "'(' after \(quantifier.rawValue)")
+                let sub = try parseQuery()
+                _ = try expect(kind: .rightParen, "')'")
+                return .quantifiedComparison(value: left, op: op,
+                                             quantifier: quantifier, query: sub)
+            }
             let right = try parseAdditive()
             return .binary(op: op, lhs: left, rhs: right)
         }
 
         return left
+    }
+
+    /// Consume `ALL`, `ANY` or `SOME` when it directly precedes a sub-query.
+    /// `ALL` is a reserved word (`UNION ALL`); `ANY` and `SOME` are contextual,
+    /// so they stay ordinary identifiers and are matched by spelling — that
+    /// keeps them usable as column names everywhere else.
+    private func matchSubqueryQuantifier() -> SubqueryQuantifier? {
+        guard peekKind(1) == .leftParen else { return nil }
+        if matchKeyword("ALL")            { return .all }
+        if matchIdentifierKeyword("ANY")  { return .any }
+        if matchIdentifierKeyword("SOME") { return .any }
+        return nil
     }
 
     private func isComparisonOperator(_ s: String) -> Bool {

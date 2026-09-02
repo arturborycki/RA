@@ -168,16 +168,25 @@ final class CalculusTests: XCTestCase {
 
     // MARK: - Set operations and CTEs
 
-    func testSetOperationCombinesTwoExpressions() throws {
+    func testUnionMergesIntoOneFormulaWithADisjunction() throws {
         let text = try inline("SELECT a FROM X UNION SELECT a FROM Y")
-        XCTAssertTrue(text.contains("∪"), text)
-        XCTAssertTrue(text.contains("X(x)"), text)
-        XCTAssertTrue(text.contains("Y(y)"), text)
+        XCTAssertEqual(text, "{ ⟨a⟩ | ∃x ( X(x) ∧ x.a = a ) ∨ ∃y ( Y(y) ∧ y.a = a ) }")
     }
 
-    func testExceptUsesTheDifferenceGlyph() throws {
+    func testIntersectMergesWithAConjunction() throws {
+        let text = try inline("SELECT a FROM X INTERSECT SELECT a FROM Y")
+        XCTAssertEqual(text, "{ ⟨a⟩ | ∃x ( X(x) ∧ x.a = a ) ∧ ∃y ( Y(y) ∧ y.a = a ) }")
+    }
+
+    func testExceptMergesWithANegation() throws {
         let text = try inline("SELECT a FROM X EXCEPT SELECT a FROM Y")
-        XCTAssertTrue(text.contains("−"), text)
+        XCTAssertEqual(text, "{ ⟨a⟩ | ∃x ( X(x) ∧ x.a = a ) ∧ ¬∃y ( Y(y) ∧ y.a = a ) }")
+    }
+
+    func testMismatchedBranchesFallBackToASetOperation() throws {
+        // Different result arities cannot share result variables.
+        let text = try inline("SELECT a, b FROM X UNION SELECT a FROM Y")
+        XCTAssertTrue(text.contains("∪"), text)
     }
 
     func testCTEBecomesANamedDefinition() throws {
@@ -230,12 +239,16 @@ final class CalculusTests: XCTestCase {
         })
     }
 
-    func testSubqueryPredicateIsFlaggedNotSilentlyDropped() throws {
+    func testSubqueryWithItsOwnGroupingStaysOpaqueAndSaysWhy() throws {
+        // Grouping cannot appear inside a formula, so this one cannot become a
+        // quantifier — and the reason has to reach the reader.
         let translation = try translate("""
-            SELECT s.name FROM Student s
-            WHERE NOT EXISTS (SELECT * FROM Course c WHERE c.sid = s.id)
+            SELECT c.name FROM Customer c
+            WHERE c.id IN (SELECT o.cid FROM Orders o GROUP BY o.cid)
             """)
-        XCTAssertTrue(translation.diagnostics.contains { $0.construct == "NOT EXISTS" })
+        let note = translation.diagnostics.first { $0.construct == "IN (sub-query)" }
+        XCTAssertEqual(note?.fidelity, .annotated)
+        XCTAssertTrue(CalcRenderer().inline(translation).contains("(…)"))
     }
 
     func testUnionAllCannotPreserveDuplicates() throws {
@@ -268,13 +281,6 @@ final class CalculusTests: XCTestCase {
         for sample in SampleQueries.all {
             let translation = try translate(sample.sql)
             assertQuantifiersAreUsed(in: translation.root, sample: sample.title)
-        }
-    }
-
-    func testEveryVariableRangesOverARelationAtom() throws {
-        for sample in SampleQueries.all {
-            let translation = try translate(sample.sql)
-            assertVariablesAreRangeRestricted(in: translation.root, sample: sample.title)
         }
     }
 
@@ -317,45 +323,6 @@ final class CalculusTests: XCTestCase {
         }
     }
 
-    private func assertVariablesAreRangeRestricted(in expression: CalcExpression, sample: String) {
-        switch expression {
-        case let .query(query):
-            var ranged = Set<CalcVar>()
-            collectRangeAtoms(query.formula, into: &ranged)
-            for variable in query.formula.variables {
-                XCTAssertTrue(ranged.contains(variable),
-                              "\(sample): '\(variable.name)' is not restricted by any relation atom")
-            }
-            for column in query.result {
-                for variable in column.term.variables {
-                    XCTAssertTrue(ranged.contains(variable),
-                                  "\(sample): result variable '\(variable.name)' is unrestricted")
-                }
-            }
-        case let .setOperation(_, left, right):
-            assertVariablesAreRangeRestricted(in: left, sample: sample)
-            assertVariablesAreRangeRestricted(in: right, sample: sample)
-        }
-    }
-
-    /// Variables bound by a *positive* relation atom — the range restriction
-    /// that makes a calculus expression safe (domain-independent).
-    private func collectRangeAtoms(_ formula: CalcFormula, into set: inout Set<CalcVar>) {
-        switch formula {
-        case let .relationAtom(_, terms, _):
-            terms.forEach { set.formUnion($0.variables) }
-        case let .and(parts), let .or(parts):
-            parts.forEach { collectRangeAtoms($0, into: &set) }
-        case let .exists(_, body), let .forAll(_, body):
-            collectRangeAtoms(body, into: &set)
-        case let .implies(lhs, rhs):
-            collectRangeAtoms(lhs, into: &set); collectRangeAtoms(rhs, into: &set)
-        case .not, .comparison, .predicate, .constant:
-            // Negation does not range-restrict: `{ t | ¬R(t) }` is unsafe.
-            break
-        }
-    }
-
     // MARK: - Rendering
 
     func testLongFormulaIsBrokenAcrossLines() throws {
@@ -391,5 +358,221 @@ final class CalculusTests: XCTestCase {
     func testInlineAndPrettyAgreeOnAShortFormula() throws {
         let translation = try translate("SELECT name FROM Employee WHERE salary > 1")
         XCTAssertEqual(CalcRenderer().inline(translation), translation.prettyText())
+    }
+
+    // MARK: - Sub-queries become quantifiers
+
+    func testExistsBecomesAnExistentialQuantifier() throws {
+        let text = try inline("""
+            SELECT c.name FROM Customer c
+            WHERE EXISTS (SELECT o.id FROM Orders o WHERE o.cid = c.id)
+            """)
+        XCTAssertEqual(text,
+            "{ c.name | Customer(c) ∧ ∃o ( Orders(o) ∧ o.cid = c.id ) }")
+    }
+
+    func testNotExistsBecomesANegatedQuantifier() throws {
+        let text = try inline("""
+            SELECT c.name FROM Customer c
+            WHERE NOT EXISTS (SELECT o.id FROM Orders o WHERE o.cid = c.id)
+            """)
+        XCTAssertEqual(text,
+            "{ c.name | Customer(c) ∧ ¬∃o ( Orders(o) ∧ o.cid = c.id ) }")
+    }
+
+    func testCorrelatedReferenceResolvesToTheOuterVariable() throws {
+        // `c.id` inside the sub-query keeps referring to the outer tuple
+        // variable — which is exactly what makes the sub-query correlated.
+        let text = try inline("""
+            SELECT c.name FROM Customer c
+            WHERE EXISTS (SELECT o.id FROM Orders o WHERE o.cid = c.id)
+            """)
+        XCTAssertTrue(text.contains("o.cid = c.id"), text)
+    }
+
+    func testDivisionNestsTwoNegatedQuantifiers() throws {
+        // The query the algebra view can only render as σ[NOT EXISTS (…)].
+        let text = try inline("""
+            SELECT s.name FROM Student s
+            WHERE NOT EXISTS (
+              SELECT c.id FROM Course c
+              WHERE NOT EXISTS (
+                SELECT e.sid FROM Enrolled e
+                WHERE e.sid = s.id AND e.cid = c.id))
+            """)
+        XCTAssertEqual(text,
+            "{ s.name | Student(s) ∧ ¬∃c ( Course(c) ∧ " +
+            "¬∃e ( Enrolled(e) ∧ e.sid = s.id ∧ e.cid = c.id ) ) }")
+    }
+
+    func testInSubqueryBecomesAnExistentialWithAnEquality() throws {
+        let text = try inline("""
+            SELECT c.name FROM Customer c
+            WHERE c.id IN (SELECT o.cid FROM Orders o WHERE o.total > 100)
+            """)
+        XCTAssertEqual(text,
+            "{ c.name | Customer(c) ∧ ∃o ( Orders(o) ∧ o.total > 100 ∧ o.cid = c.id ) }")
+    }
+
+    func testNotInNegatesTheQuantifier() throws {
+        let text = try inline("""
+            SELECT c.name FROM Customer c WHERE c.id NOT IN (SELECT o.cid FROM Orders o)
+            """)
+        XCTAssertTrue(text.contains("¬∃o ( Orders(o) ∧ o.cid = c.id )"), text)
+    }
+
+    func testGreaterThanAllBecomesAGuardedUniversal() throws {
+        let text = try inline("""
+            SELECT e.name FROM Employee e
+            WHERE e.salary > ALL (SELECT m.salary FROM Manager m)
+            """)
+        XCTAssertEqual(text,
+            "{ e.name | Employee(e) ∧ ∀m ( Manager(m) → e.salary > m.salary ) }")
+    }
+
+    func testGreaterThanAnyBecomesAnExistential() throws {
+        let text = try inline("""
+            SELECT e.name FROM Employee e
+            WHERE e.salary > ANY (SELECT m.salary FROM Manager m)
+            """)
+        XCTAssertEqual(text,
+            "{ e.name | Employee(e) ∧ ∃m ( Manager(m) ∧ e.salary > m.salary ) }")
+    }
+
+    func testSomeIsASynonymForAny() throws {
+        let any = try inline("SELECT e.x FROM E e WHERE e.x > ANY (SELECT m.y FROM M m)")
+        let some = try inline("SELECT e.x FROM E e WHERE e.x > SOME (SELECT m.y FROM M m)")
+        XCTAssertEqual(any, some)
+    }
+
+    func testAnyStaysUsableAsAColumnName() throws {
+        // ANY and SOME are contextual, not reserved: parsing must not break.
+        let text = try inline("SELECT any FROM T WHERE any > 1")
+        XCTAssertTrue(text.contains("t.any"), text)
+    }
+
+    func testScalarSubqueryComparisonBecomesAnExistential() throws {
+        let text = try inline("""
+            SELECT e.name FROM Employee e
+            WHERE e.salary = (SELECT m.salary FROM Manager m WHERE m.id = e.mgr)
+            """)
+        XCTAssertEqual(text,
+            "{ e.name | Employee(e) ∧ ∃m ( Manager(m) ∧ m.id = e.mgr ∧ e.salary = m.salary ) }")
+    }
+
+    func testSubqueryVariablesAreNotQuantifiedTwice() throws {
+        // The outer quantification pass must look at free variables only.
+        let text = try inline("""
+            SELECT c.name FROM Customer c
+            WHERE EXISTS (SELECT o.id FROM Orders o WHERE o.cid = c.id)
+            """)
+        XCTAssertEqual(text.components(separatedBy: "∃o").count - 1, 1,
+                       "o must be bound exactly once: \(text)")
+    }
+
+    func testStarSubqueryCannotSupplyAComparisonColumn() throws {
+        let translation = try translate("""
+            SELECT c.name FROM Customer c WHERE c.id IN (SELECT * FROM Orders o)
+            """)
+        XCTAssertTrue(translation.diagnostics.contains {
+            $0.construct == "IN (sub-query)" && $0.message.contains("*")
+        })
+    }
+
+    // MARK: - Safety
+
+    func testTranslatedQueriesAreSafe() throws {
+        for sample in SampleQueries.all {
+            let translation = try translate(sample.sql)
+            let unsafe = SafetyChecker.check(translation)
+            XCTAssertTrue(unsafe.isEmpty,
+                          "\(sample.title) produced unsafe formula(s): \(unsafe.map(\.message))")
+        }
+    }
+
+    func testMergedSetOperationsAreSafe() throws {
+        for sql in ["SELECT a FROM X UNION SELECT a FROM Y",
+                    "SELECT a FROM X INTERSECT SELECT a FROM Y",
+                    "SELECT a FROM X EXCEPT SELECT a FROM Y"] {
+            XCTAssertTrue(SafetyChecker.check(try translate(sql)).isEmpty, sql)
+        }
+    }
+
+    func testUnrestrictedResultVariableIsReportedAsUnsafe() throws {
+        // `{ ⟨x⟩ | x > 5 }` — a comparison does not restrict a variable's range.
+        let x = CalcVar(name: "x", relation: nil)
+        let query = CalcQuery(dialect: .trc,
+                              result: [ResultColumn(term: .variable(x))],
+                              formula: .comparison(lhs: .variable(x), op: ">", rhs: .literal("5")),
+                              resultStyle: .tuple)
+        let translation = CalcTranslation(dialect: .trc, definitions: [], root: .query(query),
+                                          steps: [], schema: QuerySchema(), diagnostics: [])
+        let findings = SafetyChecker.check(translation)
+        XCTAssertFalse(findings.isEmpty)
+        XCTAssertEqual(findings.first?.kind, .safety)
+    }
+
+    func testNegationAloneDoesNotRestrictAVariable() throws {
+        // `{ ⟨t⟩ | ¬R(t) }` is the classic domain-dependent expression.
+        let t = CalcVar(name: "t", relation: "R")
+        let query = CalcQuery(dialect: .trc,
+                              result: [ResultColumn(term: .variable(t))],
+                              formula: .not(.relationAtom(relation: "R", terms: [.variable(t)],
+                                                          arityKnown: true)),
+                              resultStyle: .tuple)
+        let translation = CalcTranslation(dialect: .trc, definitions: [], root: .query(query),
+                                          steps: [], schema: QuerySchema(), diagnostics: [])
+        XCTAssertFalse(SafetyChecker.check(translation).isEmpty)
+    }
+
+    func testUnguardedUniversalIsReported() throws {
+        let u = CalcVar(name: "u", relation: nil)
+        let query = CalcQuery(dialect: .trc,
+                              result: [],
+                              formula: .forAll([u], .comparison(lhs: .variable(u), op: ">",
+                                                                rhs: .literal("0"))))
+        let translation = CalcTranslation(dialect: .trc, definitions: [], root: .query(query),
+                                          steps: [], schema: QuerySchema(), diagnostics: [])
+        XCTAssertTrue(SafetyChecker.check(translation).contains { $0.construct == "∀u" })
+    }
+
+    // MARK: - Derivation steps
+
+    func testStepsFollowTheConstructionSequence() throws {
+        let translation = try translate("""
+            SELECT e.name
+            FROM Employee e JOIN Department d ON e.dept_id = d.id
+            WHERE d.location = 'Berlin'
+            """)
+        let clauses = translation.steps.map(\.clause)
+        XCTAssertEqual(clauses.prefix(2).map { $0 }, ["FROM", "INNER JOIN"])
+        XCTAssertTrue(clauses.contains("WHERE"))
+        XCTAssertTrue(clauses.contains("SELECT"))
+        // Steps are numbered from 1, without gaps.
+        XCTAssertEqual(translation.steps.map(\.index), Array(1...translation.steps.count))
+    }
+
+    func testFinalStepMatchesTheFinishedExpression() throws {
+        let translation = try translate("""
+            SELECT e.name FROM Employee e JOIN Department d ON e.dept_id = d.id
+            """)
+        XCTAssertEqual(translation.steps.last?.expression, translation.root)
+    }
+
+    func testSubqueryConstructionDoesNotLeakItsOwnSteps() throws {
+        // A sub-query's construction belongs to the step that introduced its
+        // quantifier, not to the top-level derivation.
+        let translation = try translate("""
+            SELECT c.name FROM Customer c
+            WHERE EXISTS (SELECT o.id FROM Orders o WHERE o.cid = c.id)
+            """)
+        XCTAssertEqual(translation.steps.filter { $0.clause == "FROM" }.count, 1)
+    }
+
+    func testEverySampleProducesSteps() throws {
+        for sample in SampleQueries.all {
+            let translation = try translate(sample.sql)
+            XCTAssertFalse(translation.steps.isEmpty, "\(sample.title) produced no steps")
+        }
     }
 }

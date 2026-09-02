@@ -100,6 +100,10 @@ indirect enum Expression: Equatable {
     case between(value: Expression, lower: Expression, upper: Expression, negated: Bool)
     case inList(value: Expression, list: [Expression], negated: Bool)
     case inSubquery(value: Expression, query: SQLQuery, negated: Bool)
+    /// `x > ALL (…)` / `x > ANY (…)`. These lower directly to ∀ and ∃, which is
+    /// most of why they are worth parsing at all.
+    case quantifiedComparison(value: Expression, op: String,
+                              quantifier: SubqueryQuantifier, query: SQLQuery)
     case exists(query: SQLQuery, negated: Bool)
     case isNull(Expression, negated: Bool)
     case list([Expression])
@@ -115,6 +119,13 @@ indirect enum Expression: Equatable {
     case typedLiteral(type: String, value: String)
     /// `INTERVAL '90' DAY`
     case interval(value: String, unit: String)
+}
+
+/// Whether a sub-query comparison must hold for every row or for some row.
+/// `SOME` is a synonym for `ANY` in standard SQL.
+enum SubqueryQuantifier: String, Equatable {
+    case all = "ALL"
+    case any = "ANY"
 }
 
 /// One `WHEN condition THEN result` branch of a CASE expression.

@@ -19,6 +19,8 @@ struct CalcTranslation: Equatable {
     var definitions: [CalcDefinition]
     /// The expression the query as a whole denotes.
     var root: CalcExpression
+    /// The construction sequence that built it.
+    var steps: [CalcStep]
     /// What was known about each relation when this was built.
     var schema: QuerySchema
     /// Everything that was not translated exactly, and why.

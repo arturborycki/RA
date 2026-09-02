@@ -31,7 +31,7 @@ enum Notation: String, CaseIterable, Identifiable {
     var availableTabs: [ResultTab] {
         switch self {
         case .ra:  return ResultTab.allCases
-        case .trc: return [.formula]
+        case .trc: return [.steps, .formula]
         }
     }
 }
