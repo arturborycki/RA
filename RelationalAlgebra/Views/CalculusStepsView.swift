@@ -44,15 +44,21 @@ struct CalculusStepsView: View {
         }
     }
 
+    /// Built as a `String` first: an interpolation, a ternary and a chain of
+    /// `+` inside one `Text(…)` is more than the type-checker will take.
+    private var summary: String {
+        let count = translation.steps.count
+        let plural = count == 1 ? "step" : "steps"
+        return "One formula, built in \(count) \(plural) — not a chain of intermediate "
+            + "relations. The calculus says what the answer is; the algebra says how to compute it."
+    }
+
     private func finalCard(_ translation: CalcTranslation) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Label("Final expression", systemImage: "checkmark.seal.fill")
                 .font(.headline)
                 .foregroundStyle(.green)
-            Text("One formula, built in \(translation.steps.count) step" +
-                 (translation.steps.count == 1 ? "" : "s") + " — not a chain of intermediate " +
-                 "relations. The calculus says *what* the answer is; the algebra says how to " +
-                 "compute it.")
+            Text(summary)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             CalculusText(text: translation.simplifiedText())

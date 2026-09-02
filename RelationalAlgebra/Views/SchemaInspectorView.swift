@@ -57,9 +57,7 @@ struct SchemaInspectorView: View {
                     } header: {
                         Text("Make the domain calculus exact")
                     } footer: {
-                        Text("\(incomplete.count == 1 ? "One relation was" : "\(incomplete.count) relations were") " +
-                             "reconstructed from the query's column references, so the arity and " +
-                             "order are a guess. Declaring the table replaces that guess.")
+                        Text(incompleteFooter)
                     }
                 }
             }
@@ -71,6 +69,14 @@ struct SchemaInspectorView: View {
                 }
             }
         }
+    }
+
+    private var incompleteFooter: String {
+        let subject = incomplete.count == 1
+            ? "One relation was"
+            : "\(incomplete.count) relations were"
+        return "\(subject) reconstructed from the query's column references, so the arity and "
+            + "order are a guess. Declaring the table replaces that guess."
     }
 
     /// A skeleton for every relation whose columns are only inferred, with the
