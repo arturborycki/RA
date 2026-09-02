@@ -324,7 +324,7 @@ final class CalculusTests: XCTestCase {
                 check(inner, sample: sample)
             case let .implies(lhs, rhs):
                 check(lhs, sample: sample); check(rhs, sample: sample)
-            case .relationAtom, .comparison, .predicate, .constant:
+            case .relationAtom, .comparison, .predicate, .constant, .aggregateBinding:
                 break
             }
         }

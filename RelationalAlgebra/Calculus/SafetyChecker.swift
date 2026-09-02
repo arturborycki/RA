@@ -88,7 +88,8 @@ struct SafetyChecker {
 
         case let .and(parts):
             var restricted = parts.reduce(into: Set<CalcVar>()) { $0.formUnion(rangeRestricted($1)) }
-            propagate(equalities(among: parts), into: &restricted)
+            propagate(equalities(among: parts), bindings: aggregateBindings(among: parts),
+                      into: &restricted)
             return restricted
 
         case let .or(parts):
@@ -108,9 +109,15 @@ struct SafetyChecker {
 
         case let .comparison(lhs, op, rhs) where op == "=":
             // A lone equality is still a restriction when one side is ground:
-            // `{ ⟨c⟩ | c = COUNT{ … } }` denotes one value.
+            // `{ ⟨x⟩ | x = 5 }` denotes one value, not the whole domain.
             var restricted = Set<CalcVar>()
-            propagate([(lhs, rhs)], into: &restricted)
+            propagate([(lhs, rhs)], bindings: [], into: &restricted)
+            return restricted
+
+        case .aggregateBinding:
+            // `{ ⟨c⟩ | c = COUNT{ … } }` — one group, so one value.
+            var restricted = Set<CalcVar>()
+            propagate([], bindings: aggregateBindings(among: [formula]), into: &restricted)
             return restricted
 
         case .forAll, .not, .comparison, .predicate, .constant:
@@ -134,18 +141,45 @@ struct SafetyChecker {
         }
     }
 
+    /// Aggregate bindings among a conjunction's parts, as (result variable, what
+    /// the comprehension refers to from outside).
+    private static func aggregateBindings(among parts: [CalcFormula]) -> [(CalcVar, Set<CalcVar>)] {
+        parts.flatMap { part -> [(CalcVar, Set<CalcVar>)] in
+            switch part {
+            case let .aggregateBinding(result, _, _, element, variables, condition):
+                return [(result, CalcFormula.aggregateFreeVariables(element: element,
+                                                                    variables: variables,
+                                                                    condition: condition))]
+            case let .and(inner):
+                return aggregateBindings(among: inner)
+            default:
+                return []
+            }
+        }
+    }
+
     /// Carry restrictions across equalities until nothing new is restricted.
     ///
     /// A *ground* side — a constant, or an aggregate whose own free variables
     /// are already restricted — restricts the other side too: `{ ⟨x⟩ | x = 5 }`
     /// denotes one value, not the whole domain. That is the standard rule, and
     /// it is what keeps `h = COUNT{ … }` from reading as unsafe.
+    ///
+    /// An aggregate binding restricts its result the same way: once whatever the
+    /// comprehension refers to from outside is restricted, the aggregate over it
+    /// is a single value.
     private static func propagate(_ equalities: [(CalcTerm, CalcTerm)],
+                                  bindings: [(CalcVar, Set<CalcVar>)],
                                   into restricted: inout Set<CalcVar>) {
-        guard !equalities.isEmpty else { return }
+        guard !equalities.isEmpty || !bindings.isEmpty else { return }
         var changed = true
         while changed {
             changed = false
+            for (result, referenced) in bindings
+            where referenced.isSubset(of: restricted) && !restricted.contains(result) {
+                restricted.insert(result)
+                changed = true
+            }
             for (lhs, rhs) in equalities {
                 let left = lhs.variables, right = rhs.variables
                 if right.isSubset(of: restricted), !left.isEmpty, !left.isSubset(of: restricted) {
@@ -180,6 +214,8 @@ struct SafetyChecker {
             }
             return diagnostics + unguardedUniversals(body, context: context)
 
+        case let .aggregateBinding(_, _, _, _, _, condition):
+            return unguardedUniversals(condition, context: context)
         case let .and(parts), let .or(parts):
             return parts.flatMap { unguardedUniversals($0, context: context) }
         case let .not(inner):

@@ -456,11 +456,11 @@ final class TRCBuilder {
         let key = expr.rendered
         if let existing = bindings[key] { return existing }
 
-        let aggregate = aggregateTerm(expr, source: source, membership: membership)
         let variable = allocate(preferred: alias ?? shortName(for: aggregateFunction(of: expr)),
                                 relation: nil)
         bindings[key] = variable
-        conjuncts.append(.comparison(lhs: .variable(variable), op: "=", rhs: aggregate))
+        conjuncts.append(aggregateBinding(expr, result: variable,
+                                          source: source, membership: membership))
         return variable
     }
 
@@ -469,13 +469,14 @@ final class TRCBuilder {
         return name.uppercased()
     }
 
-    private func aggregateTerm(_ expr: Expression, source: SourceBlock,
-                               membership: CalcFormula) -> CalcTerm {
+    private func aggregateBinding(_ expr: Expression, result: CalcVar, source: SourceBlock,
+                                  membership: CalcFormula) -> CalcFormula {
         guard case let .function(name, args, distinct) = expr else {
             // An aggregate wrapped in arithmetic — kept whole rather than split,
             // since splitting it would change what is being averaged.
-            return .aggregate(function: expr.rendered, distinct: false, element: nil,
-                              variables: source.scope.localVariables, condition: membership)
+            return .aggregateBinding(result: result, function: expr.rendered, distinct: false,
+                                     element: nil, variables: source.scope.localVariables,
+                                     condition: membership)
         }
         // COUNT(*) counts tuples; every other aggregate collects a value.
         let element: CalcTerm?
@@ -484,8 +485,9 @@ final class TRCBuilder {
         } else {
             element = args.first.map { term($0, scope: source.scope) }
         }
-        return .aggregate(function: name.uppercased(), distinct: distinct, element: element,
-                          variables: source.scope.localVariables, condition: membership)
+        return .aggregateBinding(result: result, function: name.uppercased(), distinct: distinct,
+                                 element: element, variables: source.scope.localVariables,
+                                 condition: membership)
     }
 
     /// Translate HAVING, replacing each aggregate with the variable already
@@ -844,6 +846,8 @@ final class TRCBuilder {
                 visit(lhs); visit(rhs)
             case let .predicate(_, terms):
                 terms.forEach { visitTerm($0) }
+            case let .aggregateBinding(result, _, _, _, _, _):
+                if seen.insert(result).inserted { ordered.append(result) }
             case .constant:
                 break
             }
@@ -857,10 +861,6 @@ final class TRCBuilder {
         case let .variable(v):           return [v]
         case let .attribute(v, _):       return [v]
         case .literal, .opaque:          return []
-        case let .aggregate(_, _, element, variables, condition):
-            return CalcTerm.aggregateFreeVariables(element: element, variables: variables,
-                                                   condition: condition)
-                .sorted { $0.name < $1.name }
         case let .application(_, args, _): return args.flatMap { orderedTermVariables($0) }
         case let .binaryOp(_, lhs, rhs): return orderedTermVariables(lhs) + orderedTermVariables(rhs)
         }

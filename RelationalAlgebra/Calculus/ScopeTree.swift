@@ -52,7 +52,7 @@ extension CalcFormula {
             return DiagramNode(symbol: "\(relation)(\(inner))", detail: nil,
                                isLeaf: true, children: [])
 
-        case .comparison, .predicate, .constant:
+        case .comparison, .predicate, .constant, .aggregateBinding:
             // Atomic conditions are the leaves: they bind nothing, so the tree
             // has nothing to say about them beyond what they are.
             return DiagramNode(symbol: renderer.inline(self), detail: nil,

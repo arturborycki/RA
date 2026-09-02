@@ -156,6 +156,15 @@ final class DRCLoweringEngine {
         case let .predicate(rendered, terms):
             return .predicate(rendered: rendered, terms: terms.map { lower($0) })
 
+        case let .aggregateBinding(result, function, distinct, element, variables, condition):
+            // Condition first: its atoms establish the tuple variables that the
+            // collected element and the variable list then refer to.
+            let loweredCondition = lower(condition)
+            return .aggregateBinding(result: result, function: function, distinct: distinct,
+                                     element: element.map { lower($0) },
+                                     variables: domainVariables(of: variables),
+                                     condition: loweredCondition)
+
         case .constant:
             return formula
         }
@@ -193,14 +202,6 @@ final class DRCLoweringEngine {
             return .application(name: name, args: args.map { lower($0) }, distinct: distinct)
         case let .binaryOp(op, lhs, rhs):
             return .binaryOp(op: op, lhs: lower(lhs), rhs: lower(rhs))
-        case let .aggregate(function, distinct, element, variables, condition):
-            // Condition first: its atoms establish the tuple variables that the
-            // collected element and the variable list then refer to.
-            let loweredCondition = lower(condition)
-            return .aggregate(function: function, distinct: distinct,
-                              element: element.map { lower($0) },
-                              variables: domainVariables(of: variables),
-                              condition: loweredCondition)
         case .literal, .opaque:
             return term
         }

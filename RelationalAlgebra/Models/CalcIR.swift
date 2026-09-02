@@ -66,22 +66,6 @@ indirect enum CalcTerm: Equatable {
     case application(name: String, args: [CalcTerm], distinct: Bool)
     /// An infix arithmetic or concatenation operator: `x + y`, `a || b`.
     case binaryOp(op: String, lhs: CalcTerm, rhs: CalcTerm)
-    /// An aggregate over a set comprehension: `COUNT{ u | Employee(u) ∧ u.d = x }`.
-    ///
-    /// First-order relational calculus has no aggregation, so this is a
-    /// documented *extension*, labelled as one wherever it appears. The shape is
-    /// the one textbooks reach for: a function applied to the multiset a
-    /// comprehension collects.
-    ///
-    /// The parts are spelled out here rather than wrapped in a struct because a
-    /// struct in this loop is a genuine recursion: `indirect` boxes an *enum's*
-    /// payload, and a struct cannot be indirect, so `CalcTerm` → struct →
-    /// `CalcFormula` → `CalcTerm` is a circular reference the compiler rejects.
-    /// `element` is nil for `COUNT(*)`, which counts tuples rather than values;
-    /// `variables` are the comprehension's own scope, and `condition` is what
-    /// qualifies a tuple for the group.
-    case aggregate(function: String, distinct: Bool, element: CalcTerm?,
-                   variables: [CalcVar], condition: CalcFormula)
     /// Anything not yet given structure, carrying its pre-rendered text.
     /// Always accompanied by a diagnostic so it is never silently approximated.
     case opaque(String)
@@ -96,22 +80,7 @@ extension CalcTerm {
         case .literal, .opaque:             return []
         case let .application(_, args, _):  return args.reduce(into: Set()) { $0.formUnion($1.variables) }
         case let .binaryOp(_, lhs, rhs):    return lhs.variables.union(rhs.variables)
-        case let .aggregate(_, _, element, variables, condition):
-            return CalcTerm.aggregateFreeVariables(element: element, variables: variables,
-                                                   condition: condition)
         }
-    }
-}
-
-extension CalcTerm {
-    /// What an aggregate comprehension refers to from *outside* its own scope —
-    /// the grouping variables that make it one comprehension per group rather
-    /// than one over the whole relation.
-    static func aggregateFreeVariables(element: CalcTerm?, variables: [CalcVar],
-                                       condition: CalcFormula) -> Set<CalcVar> {
-        condition.freeVariables
-            .union(element?.variables ?? [])
-            .subtracting(variables)
     }
 }
 
@@ -140,6 +109,22 @@ indirect enum CalcFormula: Equatable {
     /// A predicate with no first-order structure yet — `x IS NULL`, `x LIKE …`,
     /// an unexpanded sub-query. `terms` is what the checker can still see.
     case predicate(rendered: String, terms: [CalcTerm])
+    /// `h = COUNT{ u | Employee(u) ∧ u.dept_id = d }` — an aggregate over a set
+    /// comprehension, bound to a result variable.
+    ///
+    /// First-order relational calculus has no aggregation, so this is a
+    /// documented *extension*, labelled as one wherever it appears. It belongs
+    /// on the formula rather than among the terms for two reasons. An aggregate
+    /// is never a value inside a condition, only ever a binding — so this is the
+    /// truer model. And a *term* holding a `CalcFormula` would make `CalcTerm`
+    /// and `CalcFormula` mutually recursive, which Swift will not derive
+    /// conformances across.
+    ///
+    /// `element` is nil for `COUNT(*)`, which counts tuples rather than values.
+    /// `variables` are the comprehension's own scope; `condition` is what
+    /// qualifies a tuple for the group.
+    case aggregateBinding(result: CalcVar, function: String, distinct: Bool,
+                          element: CalcTerm?, variables: [CalcVar], condition: CalcFormula)
     case constant(Bool)
 }
 
@@ -161,6 +146,9 @@ extension CalcFormula {
             return lhs.variables.union(rhs.variables)
         case let .predicate(_, terms):
             return terms.reduce(into: Set()) { $0.formUnion($1.variables) }
+        case let .aggregateBinding(result, _, _, element, variables, condition):
+            return condition.variables.union(element?.variables ?? [])
+                .union(variables).union([result])
         case .constant:
             return []
         }
@@ -184,6 +172,11 @@ extension CalcFormula {
             return lhs.freeVariables.union(rhs.freeVariables)
         case let .predicate(_, terms):
             return terms.reduce(into: Set()) { $0.formUnion($1.variables) }
+        case let .aggregateBinding(result, _, _, element, variables, condition):
+            // The comprehension binds its own variables; the result variable
+            // and whatever it refers to from outside are free.
+            return CalcFormula.aggregateFreeVariables(element: element, variables: variables,
+                                                      condition: condition).union([result])
         case .constant:
             return []
         }
@@ -201,9 +194,19 @@ extension CalcFormula {
             return inner.containsQuantifier
         case let .implies(lhs, rhs):
             return lhs.containsQuantifier || rhs.containsQuantifier
-        case .relationAtom, .comparison, .predicate, .constant:
+        case .relationAtom, .comparison, .predicate, .constant, .aggregateBinding:
             return false
         }
+    }
+
+    /// The variables an aggregate comprehension refers to from *outside* its own
+    /// scope — the grouping variables that make it one comprehension per group
+    /// rather than one over the whole relation.
+    static func aggregateFreeVariables(element: CalcTerm?, variables: [CalcVar],
+                                       condition: CalcFormula) -> Set<CalcVar> {
+        condition.freeVariables
+            .union(element?.variables ?? [])
+            .subtracting(variables)
     }
 
     /// Conjoin, flattening nested `and` and dropping `TRUE`.

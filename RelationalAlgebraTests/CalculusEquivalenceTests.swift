@@ -193,8 +193,8 @@ struct CalcEvaluator {
         case let .constant(value):
             return value ? envs : []
 
-        case .predicate:
-            return nil // LIKE, IS NULL, an unexpanded sub-query
+        case .predicate, .aggregateBinding:
+            return nil // LIKE, IS NULL, an unexpanded sub-query, an aggregate
         }
     }
 
@@ -293,7 +293,8 @@ private extension CalcFormula {
         switch self {
         case .relationAtom, .or:            return true
         case let .and(parts):               return parts.contains { $0.binds }
-        case .comparison, .not, .exists, .forAll, .implies, .predicate, .constant:
+        case .comparison, .not, .exists, .forAll, .implies, .predicate, .constant,
+             .aggregateBinding:
             return false
         }
     }

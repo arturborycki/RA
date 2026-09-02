@@ -371,6 +371,13 @@ struct CalcSimplifier {
         case let .predicate(rendered, terms):
             return .predicate(rendered: rendered,
                               terms: terms.map { substitute($0, variable, with: replacement) })
+        case let .aggregateBinding(result, function, distinct, element, variables, condition):
+            // A comprehension that re-binds the name shadows it.
+            guard !variables.contains(variable) else { return formula }
+            return .aggregateBinding(result: result, function: function, distinct: distinct,
+                                     element: element.map { substitute($0, variable, with: replacement) },
+                                     variables: variables,
+                                     condition: substitute(condition, variable, with: replacement))
         case .constant:
             return formula
         }
@@ -390,13 +397,6 @@ struct CalcSimplifier {
         case let .binaryOp(op, lhs, rhs):
             return .binaryOp(op: op, lhs: substitute(lhs, variable, with: replacement),
                              rhs: substitute(rhs, variable, with: replacement))
-        case let .aggregate(function, distinct, element, variables, condition):
-            // A comprehension that re-binds the name shadows it.
-            guard !variables.contains(variable) else { return term }
-            return .aggregate(function: function, distinct: distinct,
-                              element: element.map { substitute($0, variable, with: replacement) },
-                              variables: variables,
-                              condition: substitute(condition, variable, with: replacement))
         case .literal, .opaque:
             return term
         }

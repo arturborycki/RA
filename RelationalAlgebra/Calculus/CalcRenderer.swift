@@ -37,21 +37,7 @@ extension CalcTerm {
             return "\(lhs.plainText) \(op) \(rhs.plainText)"
         case let .opaque(text):
             return text
-        case let .aggregate(function, distinct, element, variables, condition):
-            return CalcTerm.aggregateText(function: function, distinct: distinct,
-                                          element: element, variables: variables,
-                                          condition: condition)
         }
-    }
-
-    /// `COUNT{ u | Employee(u) ∧ u.dept_id = d }`, or with the collected value
-    /// named where the aggregate is over one: `AVG{ u.salary | … }`.
-    static func aggregateText(function: String, distinct: Bool, element: CalcTerm?,
-                              variables: [CalcVar], condition: CalcFormula) -> String {
-        let collected = element?.plainText ?? variables.map(\.name).joined(separator: ", ")
-        let prefix = distinct ? "DISTINCT " : ""
-        let body = CalcRenderer().inline(condition)
-        return "\(function){ \(prefix)\(collected) \(CalcSymbol.such) \(body) }"
     }
 }
 
@@ -240,7 +226,7 @@ struct CalcRenderer {
     /// ¬ and quantifiers bind tightest, then ∧, then ∨, then →.
     private func precedence(_ formula: CalcFormula) -> Int {
         switch formula {
-        case .relationAtom, .comparison, .predicate, .constant: return 5
+        case .relationAtom, .comparison, .predicate, .constant, .aggregateBinding: return 5
         case .not, .exists, .forAll:                            return 4
         case .and:                                              return 3
         case .or:                                               return 2
@@ -288,6 +274,14 @@ struct CalcRenderer {
 
         case let .predicate(rendered, _):
             text = rendered
+
+        case let .aggregateBinding(result, function, distinct, element, variables, condition):
+            // `h = COUNT{ u | … }` — the collected value, then what qualifies a
+            // tuple for the group.
+            let collected = element?.plainText ?? variables.map(\.name).joined(separator: ", ")
+            let prefix = distinct ? "DISTINCT " : ""
+            text = "\(result.name) = \(function){ \(prefix)\(collected) "
+                 + "\(CalcSymbol.such) \(render(condition, parentPrecedence: 0)) }"
 
         case let .constant(value):
             text = value ? "TRUE" : "FALSE"
@@ -345,7 +339,7 @@ struct CalcRenderer {
             return prettyFormula(lhs, width: width) + "\n\(CalcSymbol.implies)\n"
                  + prettyFormula(rhs, width: width)
 
-        case .relationAtom, .comparison, .predicate, .constant:
+        case .relationAtom, .comparison, .predicate, .constant, .aggregateBinding:
             // Atomic: there is nowhere to break, so an over-long line stands
             // and the surrounding scroll view handles it.
             return flat
