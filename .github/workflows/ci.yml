@@ -41,4 +41,16 @@ jobs:
             -project RelationalAlgebra.xcodeproj \
             -scheme RelationalAlgebra \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet 2>&1 | tee build.log
+
+      # xcodebuild interleaves diagnostics with thousands of lines of command
+      # echoes. Repeat just the actionable lines at the very end of the log, so
+      # a failure can be read without scrolling through the whole transcript.
+      - name: Failure summary
+        if: failure()
+        run: |
+          echo "===== errors and test failures ====="
+          grep -E "error:|note: add|XCTAssertion|failed \(|Testing failed" build.log \
+            | grep -v "^ *cd " | sed 's#/Users/runner/work/RA/RA/##' | head -60 || true
+          echo "===== end ====="
