@@ -8,8 +8,9 @@ A native **iPadOS** app that converts a SQL query — typed, pasted, or imported
 from a `.sql` file — into a **step-by-step relational-algebra derivation**, a
 final one-line **RA formula**, and an interactive **operator-tree diagram**.
 
-Built entirely in **Swift + SwiftUI** (no third-party dependencies). It also
-runs on iPhone and Mac Catalyst, but the two-column layout is designed for iPad.
+Built entirely in **Swift + SwiftUI** (no third-party dependencies). The layout
+is adaptive: a two-column split view on iPad (regular width) and an
+Editor / Result tab bar on iPhone (compact width); it also runs on Mac Catalyst.
 
 <p align="center"><em>SQL in → σ, π, ⋈, γ, δ, τ out.</em></p>
 
