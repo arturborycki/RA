@@ -50,7 +50,9 @@ struct CalcSimplifier {
          CalcSimplifier.inlineConstants),
 
         ("Flatten nested quantifiers",
-         "∃x ( ∃y ( φ ) ) is ∃x, y ( φ ) — adjacent quantifiers of the same kind collapse into one.",
+         "∃x ( ∃y ( φ ) ) is ∃x, y ( φ ) — adjacent quantifiers of the same kind collapse into one. " +
+         "So does one buried in a conjunction: ∃x ( φ ∧ ∃y ( ψ ) ) is ∃x, y ( φ ∧ ψ ), which is how " +
+         "a join reads once its equality has been unified away.",
          CalcSimplifier.flattenQuantifiers),
 
         ("Drop vacuous quantifiers",
@@ -206,10 +208,14 @@ struct CalcSimplifier {
     private static func flatten(_ formula: CalcFormula) -> CalcFormula {
         switch formula {
         case let .exists(vars, body):
-            if case let .exists(innerVars, innerBody) = flatten(body) {
+            let inner = flatten(body)
+            if case let .exists(innerVars, innerBody) = inner {
                 return .exists(vars + innerVars.filter { !vars.contains($0) }, innerBody)
             }
-            return .exists(vars, flatten(body))
+            if case let .and(parts) = inner {
+                return hoistExistentials(outer: vars, over: parts)
+            }
+            return .exists(vars, inner)
         case let .forAll(vars, body):
             if case let .forAll(innerVars, innerBody) = flatten(body) {
                 return .forAll(vars + innerVars.filter { !vars.contains($0) }, innerBody)
@@ -226,6 +232,32 @@ struct CalcSimplifier {
         default:
             return formula
         }
+    }
+
+    /// `∃x ( φ ∧ ∃y ( ψ ) )` is `∃x, y ( φ ∧ ψ )`.
+    ///
+    /// Sound as long as the inner variables are not free in the conjuncts they
+    /// would be moved across — otherwise hoisting would capture them. The
+    /// lowering hands out fresh names, so the guard rarely bites; it is here
+    /// because "rarely" is not "never".
+    private static func hoistExistentials(outer vars: [CalcVar],
+                                          over parts: [CalcFormula]) -> CalcFormula {
+        var hoisted: [CalcVar] = []
+        var rewritten = parts
+
+        for index in parts.indices {
+            guard case let .exists(innerVars, innerBody) = parts[index] else { continue }
+            let elsewhere = parts.enumerated()
+                .filter { $0.offset != index }
+                .reduce(into: Set<CalcVar>()) { $0.formUnion($1.element.freeVariables) }
+            guard innerVars.allSatisfy({ !elsewhere.contains($0) && !vars.contains($0) })
+            else { continue }
+            hoisted.append(contentsOf: innerVars)
+            rewritten[index] = innerBody
+        }
+
+        guard !hoisted.isEmpty else { return .exists(vars, CalcFormula.conjunction(parts)) }
+        return .exists(vars + hoisted, CalcFormula.conjunction(rewritten))
     }
 
     // MARK: - Pass: drop vacuous quantifiers

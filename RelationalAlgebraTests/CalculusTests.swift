@@ -226,15 +226,20 @@ final class CalculusTests: XCTestCase {
         XCTAssertFalse(CalcRenderer().inline(translation).contains("δ"))
     }
 
-    func testGroupByIsFlaggedAsAnExtensionAndKeptOutsideTheBraces() throws {
+    func testGroupByIsFlaggedAsAnExtensionAndBecomesAComprehension() throws {
         let translation = try translate("""
             SELECT dept, COUNT(*) FROM Employee GROUP BY dept
             """)
-        XCTAssertTrue(translation.diagnostics.contains { $0.fidelity == .extended })
+        XCTAssertTrue(translation.diagnostics.contains {
+            $0.construct == "GROUP BY / aggregates" && $0.fidelity == .extended
+        })
+        // Grouping is written *inside* the formula — one comprehension per
+        // group, tied to the grouping column — rather than annotated outside
+        // the braces as sort and limit are. So it is not among the extensions.
         let query = try onlyQuery(translation)
-        XCTAssertTrue(query.extensions.contains { $0.kind == .grouping })
+        XCTAssertFalse(query.extensions.contains { $0.kind == .grouping })
         let text = CalcRenderer().inline(translation)
-        XCTAssertTrue(text.contains("applied to"), text)
+        XCTAssertTrue(text.contains("COUNT{"), text)
     }
 
     func testOrderByAndLimitAreAnnotatedOutsideTheBraces() throws {
