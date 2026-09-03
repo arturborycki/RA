@@ -16,6 +16,7 @@ struct EditorView: View {
     @State private var showSchema = false
     @State private var importError: String?
     @FocusState private var editorFocused: Bool
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
         VStack(spacing: 0) {
@@ -61,6 +62,23 @@ struct EditorView: View {
                 .padding(12)
                 .scrollContentBackground(.hidden)
                 .background(Color(.secondarySystemGroupedBackground))
+                // On the text editor itself, not in the screen's toolbar
+                // builder alongside the primary-action group: a keyboard group
+                // sharing a builder with other placements does not reliably
+                // reach the accessory bar. The iPhone keyboard covers most of
+                // the editor and has no hide key of its own, so this is the
+                // only way back out of it.
+                .toolbar {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button {
+                            editorFocused = false
+                        } label: {
+                            Image(systemName: "keyboard.chevron.compact.down")
+                        }
+                        .accessibilityLabel("Hide keyboard")
+                    }
+                }
         }
     }
 
@@ -97,60 +115,66 @@ struct EditorView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
-            Menu {
-                ForEach(SampleQueries.groups) { group in
-                    Menu {
-                        Section(group.note) {
-                            ForEach(group.queries) { sample in
-                                Button(sample.title) { viewModel.load(sample: sample) }
-                            }
-                        }
-                    } label: {
-                        Text(group.title)
-                    }
+            // Five buttons fit an iPad's navigation bar and crowd a phone's.
+            // Examples earns its place either way — it is how most people load
+            // a query — and the rest collapse behind one overflow button.
+            examplesMenu
+            if sizeClass == .compact {
+                Menu {
+                    editorActions
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
                 }
-            } label: {
-                Label("Examples", systemImage: "text.book.closed")
-            }
-
-            Button {
-                showSchema = true
-            } label: {
-                Label("Schema", systemImage: "tablecells")
-            }
-
-            Button {
-                paste()
-            } label: {
-                Label("Paste", systemImage: "doc.on.clipboard")
-            }
-
-            Button {
-                showImporter = true
-            } label: {
-                Label("Import", systemImage: "square.and.arrow.down")
-            }
-
-            Button(role: .destructive) {
-                viewModel.replaceText("")
-                editorFocused = true
-            } label: {
-                Label("Clear", systemImage: "trash")
+            } else {
+                editorActions
             }
         }
+    }
 
-        // On an iPhone the software keyboard covers most of the screen and has
-        // no dismiss key of its own, so the editor supplies the usual one. The
-        // accessory bar exists only while something is being typed into, so the
-        // button appears exactly when it is wanted and never otherwise.
-        ToolbarItemGroup(placement: .keyboard) {
-            Spacer()
-            Button {
-                editorFocused = false
-            } label: {
-                Image(systemName: "keyboard.chevron.compact.down")
+    private var examplesMenu: some View {
+        Menu {
+            ForEach(SampleQueries.groups) { group in
+                Menu {
+                    Section(group.note) {
+                        ForEach(group.queries) { sample in
+                            Button(sample.title) { viewModel.load(sample: sample) }
+                        }
+                    }
+                } label: {
+                    Text(group.title)
+                }
             }
-            .accessibilityLabel("Hide keyboard")
+        } label: {
+            Label("Examples", systemImage: "text.book.closed")
+        }
+    }
+
+    /// The same buttons whether they sit in the bar or in the overflow menu.
+    @ViewBuilder
+    private var editorActions: some View {
+        Button {
+            showSchema = true
+        } label: {
+            Label("Schema", systemImage: "tablecells")
+        }
+
+        Button {
+            paste()
+        } label: {
+            Label("Paste", systemImage: "doc.on.clipboard")
+        }
+
+        Button {
+            showImporter = true
+        } label: {
+            Label("Import", systemImage: "square.and.arrow.down")
+        }
+
+        Button(role: .destructive) {
+            viewModel.replaceText("")
+            editorFocused = true
+        } label: {
+            Label("Clear", systemImage: "trash")
         }
     }
 

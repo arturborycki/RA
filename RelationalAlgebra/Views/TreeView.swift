@@ -24,7 +24,7 @@ struct TreeView: View {
                 ZStack(alignment: .topLeading) {
                     EdgeCanvas(edges: layout.edges, size: layout.size)
                     ForEach(layout.nodes) { positioned in
-                        NodeBubble(node: positioned.node)
+                        NodeBubble(node: positioned.node, size: positioned.size)
                             .position(positioned.center)
                     }
                 }
@@ -96,13 +96,18 @@ struct EdgeCanvas: View {
 /// relation (rounded rectangle with the table name).
 struct NodeBubble: View {
     let node: DiagramNode
+    /// The size `TreeLayout` reserved. Drawing at exactly that size is what
+    /// keeps the picture and the layout from disagreeing — a bubble wider than
+    /// its slab is the overlap the calculus scope tree used to show.
+    let size: CGSize
 
     var body: some View {
         if node.isLeaf {
             Text(node.symbol)
                 .font(.system(.headline, design: .rounded))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .frame(width: size.width, height: size.height)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.18)))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.accentColor, lineWidth: 1.5))
         } else {
@@ -116,11 +121,10 @@ struct NodeBubble: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
-                        .frame(maxWidth: 132)
+                        .frame(maxWidth: NodeMetrics.detailWidth)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .frame(width: size.width, height: size.height)
             .background(
                 RoundedRectangle(cornerRadius: 12)
                     .fill(Color(.secondarySystemGroupedBackground))

@@ -25,12 +25,30 @@ enum ResultTab: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @EnvironmentObject private var viewModel: AppViewModel
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @AppStorage("appTheme") private var appTheme: AppTheme = .system
     @AppStorage("notation") private var notation: Notation = .ra
     @AppStorage("resultTab") private var selectedTab: ResultTab = .steps
+    @AppStorage("phoneTab") private var phoneTab: PhoneTab = .sql
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
+        Group {
+            // A two-column split view collapses on a phone, and what it
+            // collapses to is the editor alone — the notations, which are the
+            // point of the app, are behind a back button most people never
+            // look for. At compact width the two panes become two tabs
+            // instead, so switching to a notation is one obvious tap.
+            if sizeClass == .compact {
+                phoneLayout
+            } else {
+                splitLayout
+            }
+        }
+        .preferredColorScheme(appTheme.colorScheme)
+    }
+
+    private var splitLayout: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             EditorView()
                 .navigationTitle("SQL")
@@ -46,7 +64,53 @@ struct ContentView: View {
                 }
         }
         .navigationSplitViewStyle(.balanced)
-        .preferredColorScheme(appTheme.colorScheme)
+    }
+
+    private var phoneLayout: some View {
+        TabView(selection: $phoneTab) {
+            NavigationStack {
+                EditorView()
+                    .navigationTitle("SQL")
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+            .tabItem { Label(PhoneTab.sql.label, systemImage: PhoneTab.sql.systemImage) }
+            .tag(PhoneTab.sql)
+
+            NavigationStack {
+                ResultsView(notation: $notation, selectedTab: $selectedTab)
+                    .navigationTitle(notation.title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            ThemePicker(theme: $appTheme)
+                        }
+                    }
+            }
+            .tabItem { Label(PhoneTab.result.label, systemImage: PhoneTab.result.systemImage) }
+            .tag(PhoneTab.result)
+        }
+    }
+}
+
+/// The two halves of the iPad layout, as tabs for a phone.
+enum PhoneTab: String, CaseIterable, Identifiable {
+    case sql
+    case result
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .sql:    return "SQL"
+        case .result: return "Notation"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .sql:    return "text.alignleft"
+        case .result: return "function"
+        }
     }
 }
 
