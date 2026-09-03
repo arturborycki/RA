@@ -34,4 +34,7 @@ struct RATranslation: Equatable {
     var finalExpression: RANode
     /// The name bound to the final result (e.g. "R₅").
     var finalName: String
+    /// What the algebra could not express exactly, in the same form the
+    /// calculus reports it so one banner serves every notation.
+    var diagnostics: [CalcDiagnostic] = []
 }

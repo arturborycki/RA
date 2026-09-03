@@ -5,7 +5,7 @@
 //  The relational-algebra expression tree together with its rendering.
 //  Every node knows how to render itself both as a one-line formula (using the
 //  conventional Unicode operator glyphs) and as a hierarchical tree of
-//  `RATreeNode` values for the visual canvas.
+//  `DiagramNode` values for the visual canvas.
 //
 
 import Foundation
@@ -23,6 +23,9 @@ enum RASymbol {
     static let group          = "γ"   // GROUP BY + aggregation
     static let distinct       = "δ"   // DISTINCT (duplicate elimination)
     static let sort           = "τ"   // ORDER BY
+    /// Spelled out rather than given a glyph: row limiting has no agreed
+    /// symbol, and inventing one would teach a notation nobody else uses.
+    static let limit          = "LIMIT" // LIMIT / OFFSET / FETCH FIRST
     static let union          = "∪"
     static let intersect      = "∩"
     static let difference     = "−"
@@ -49,11 +52,27 @@ indirect enum RANode: Equatable {
     case distinct(child: RANode)
     /// τ_{sort keys}
     case sort(keys: [String], child: RANode)
+    /// LIMIT_{n [offset m]} — row limiting. Like τ, an extension to the
+    /// classical set-based algebra rather than one of Codd's operators, and
+    /// spelled out rather than given an invented glyph for that reason.
+    case limit(count: Int?, offset: Int?, child: RANode)
     case union(left: RANode, right: RANode)
     case intersect(left: RANode, right: RANode)
     case difference(left: RANode, right: RANode)
 
     enum OuterKind: Equatable { case left, right, full }
+}
+
+extension RANode {
+    /// `10`, `10 offset 20`, or just `offset 20` when only an offset was given.
+    static func limitSubscript(count: Int?, offset: Int?) -> String {
+        switch (count, offset) {
+        case let (count?, offset?): return "\(count) offset \(offset)"
+        case let (count?, nil):     return "\(count)"
+        case let (nil, offset?):    return "offset \(offset)"
+        case (nil, nil):            return ""
+        }
+    }
 }
 
 // MARK: - Linear formula rendering
@@ -117,6 +136,9 @@ extension RANode {
             return unary(RASymbol.distinct, child)
         case let .sort(keys, child):
             return unary("\(RASymbol.sort)[\(keys.joined(separator: ", "))]", child)
+        case let .limit(count, offset, child):
+            return unary("\(RASymbol.limit)[\(RANode.limitSubscript(count: count, offset: offset))]",
+                         child)
         case let .union(lhs, rhs):
             return binary(RASymbol.union, lhs, rhs)
         case let .intersect(lhs, rhs):
@@ -178,6 +200,10 @@ extension RANode {
         case let .sort(keys, child):
             return "\(RASymbol.sort)[\(keys.joined(separator: ", "))] ( \(child.formula) )"
 
+        case let .limit(count, offset, child):
+            let sub = RANode.limitSubscript(count: count, offset: offset)
+            return "\(RASymbol.limit)[\(sub)] ( \(child.formula) )"
+
         case let .union(left, right):
             return "( \(left.formula) \(RASymbol.union) \(right.formula) )"
 
@@ -190,48 +216,130 @@ extension RANode {
     }
 }
 
+// MARK: - LaTeX rendering
+
+extension RANode {
+    /// The expression as LaTeX, for writing an answer up. The operator glyphs
+    /// have standard commands; relation and attribute names are escaped, since
+    /// `dept_id` is a subscript otherwise.
+    var latex: String {
+        switch self {
+        case let .relation(name, alias):
+            if let alias, alias != name {
+                return "\\rho_{\(RANode.escape(alias))}( \(RANode.escape(name)) )"
+            }
+            return RANode.escape(name)
+
+        case let .selection(condition, child):
+            return "\\sigma_{\(RANode.escape(condition))}( \(child.latex) )"
+
+        case let .projection(attributes, child):
+            let list = attributes.map { RANode.escape($0) }.joined(separator: ", ")
+            return "\\pi_{\(list)}( \(child.latex) )"
+
+        case let .rename(alias, child):
+            return "\\rho_{\(RANode.escape(alias))}( \(child.latex) )"
+
+        case let .join(condition, left, right):
+            let op = condition.map { "\\bowtie_{\(RANode.escape($0))}" } ?? "\\bowtie"
+            return "( \(left.latex) \(op) \(right.latex) )"
+
+        case let .outerJoin(kind, condition, left, right):
+            let base: String
+            switch kind {
+            case .left:  base = "\\ltimes"
+            case .right: base = "\\rtimes"
+            case .full:  base = "\\bowtie^{\\circ}"
+            }
+            let op = condition.map { "\(base)_{\(RANode.escape($0))}" } ?? base
+            return "( \(left.latex) \(op) \(right.latex) )"
+
+        case let .cross(left, right):
+            return "( \(left.latex) \\times \(right.latex) )"
+
+        case let .group(grouping, aggregates, child):
+            let g = grouping.map { RANode.escape($0) }.joined(separator: ", ")
+            let a = aggregates.map { RANode.escape($0) }.joined(separator: ", ")
+            let sub = g.isEmpty ? a : (a.isEmpty ? g : "\(g); \(a)")
+            return "\\gamma_{\(sub)}( \(child.latex) )"
+
+        case let .distinct(child):
+            return "\\delta( \(child.latex) )"
+
+        case let .sort(keys, child):
+            let list = keys.map { RANode.escape($0) }.joined(separator: ", ")
+            return "\\tau_{\(list)}( \(child.latex) )"
+
+        case let .limit(count, offset, child):
+            let sub = RANode.escape(RANode.limitSubscript(count: count, offset: offset))
+            return "\\mathrm{LIMIT}_{\(sub)}( \(child.latex) )"
+
+        case let .union(left, right):
+            return "( \(left.latex) \\cup \(right.latex) )"
+        case let .intersect(left, right):
+            return "( \(left.latex) \\cap \(right.latex) )"
+        case let .difference(left, right):
+            return "( \(left.latex) \\setminus \(right.latex) )"
+        }
+    }
+
+    private static func escape(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\", with: "\\backslash ")
+            .replacingOccurrences(of: "_", with: "\\_")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "&", with: "\\&")
+            .replacingOccurrences(of: "#", with: "\\#")
+            .replacingOccurrences(of: "→", with: "\\to ")
+            .replacingOccurrences(of: "↑", with: "\\uparrow ")
+            .replacingOccurrences(of: "↓", with: "\\downarrow ")
+    }
+}
+
 // MARK: - Tree rendering model
 
-/// A layout-friendly, value-type projection of an `RANode` used by the visual
-/// canvas. Operators become nodes labelled with their glyph and a subscript;
-/// relations become leaves.
-struct RATreeNode: Identifiable, Equatable {
+/// A layout-friendly, value-type node for the visual canvas. Operators become
+/// nodes labelled with their glyph and a subscript; relations become leaves.
+///
+/// It carries no algebra-specific structure, which is why the calculus reuses it
+/// for its quantifier-scope tree — `TreeLayout` and `TreeView` then serve both
+/// diagrams unchanged.
+struct DiagramNode: Identifiable, Equatable {
     let id = UUID()
     var symbol: String        // operator glyph or relation name
     var detail: String?       // subscript (condition / attribute list)
     var isLeaf: Bool
-    var children: [RATreeNode]
+    var children: [DiagramNode]
 
-    static func == (lhs: RATreeNode, rhs: RATreeNode) -> Bool {
+    static func == (lhs: DiagramNode, rhs: DiagramNode) -> Bool {
         lhs.symbol == rhs.symbol && lhs.detail == rhs.detail &&
         lhs.isLeaf == rhs.isLeaf && lhs.children == rhs.children
     }
 }
 
 extension RANode {
-    /// Convert to a `RATreeNode` for the visual canvas.
-    var tree: RATreeNode {
+    /// Convert to a `DiagramNode` for the visual canvas.
+    var tree: DiagramNode {
         switch self {
         case let .relation(name, alias):
             if let alias, alias != name {
-                return RATreeNode(symbol: RASymbol.rename, detail: alias,
+                return DiagramNode(symbol: RASymbol.rename, detail: alias,
                                   isLeaf: false,
-                                  children: [RATreeNode(symbol: name, detail: nil, isLeaf: true, children: [])])
+                                  children: [DiagramNode(symbol: name, detail: nil, isLeaf: true, children: [])])
             }
-            return RATreeNode(symbol: name, detail: nil, isLeaf: true, children: [])
+            return DiagramNode(symbol: name, detail: nil, isLeaf: true, children: [])
 
         case let .selection(condition, child):
-            return RATreeNode(symbol: RASymbol.selection, detail: condition, isLeaf: false, children: [child.tree])
+            return DiagramNode(symbol: RASymbol.selection, detail: condition, isLeaf: false, children: [child.tree])
 
         case let .projection(attributes, child):
-            return RATreeNode(symbol: RASymbol.projection, detail: attributes.joined(separator: ", "),
+            return DiagramNode(symbol: RASymbol.projection, detail: attributes.joined(separator: ", "),
                               isLeaf: false, children: [child.tree])
 
         case let .rename(alias, child):
-            return RATreeNode(symbol: RASymbol.rename, detail: alias, isLeaf: false, children: [child.tree])
+            return DiagramNode(symbol: RASymbol.rename, detail: alias, isLeaf: false, children: [child.tree])
 
         case let .join(condition, left, right):
-            return RATreeNode(symbol: RASymbol.join, detail: condition, isLeaf: false,
+            return DiagramNode(symbol: RASymbol.join, detail: condition, isLeaf: false,
                               children: [left.tree, right.tree])
 
         case let .outerJoin(kind, condition, left, right):
@@ -241,34 +349,39 @@ extension RANode {
             case .right: glyph = RASymbol.rightJoin
             case .full:  glyph = RASymbol.fullJoin
             }
-            return RATreeNode(symbol: glyph, detail: condition, isLeaf: false,
+            return DiagramNode(symbol: glyph, detail: condition, isLeaf: false,
                               children: [left.tree, right.tree])
 
         case let .cross(left, right):
-            return RATreeNode(symbol: RASymbol.cross, detail: nil, isLeaf: false,
+            return DiagramNode(symbol: RASymbol.cross, detail: nil, isLeaf: false,
                               children: [left.tree, right.tree])
 
         case let .group(grouping, aggregates, child):
             let g = grouping.joined(separator: ", ")
             let a = aggregates.joined(separator: ", ")
             let detail = g.isEmpty ? a : "\(g); \(a)"
-            return RATreeNode(symbol: RASymbol.group, detail: detail, isLeaf: false, children: [child.tree])
+            return DiagramNode(symbol: RASymbol.group, detail: detail, isLeaf: false, children: [child.tree])
 
         case let .distinct(child):
-            return RATreeNode(symbol: RASymbol.distinct, detail: nil, isLeaf: false, children: [child.tree])
+            return DiagramNode(symbol: RASymbol.distinct, detail: nil, isLeaf: false, children: [child.tree])
 
         case let .sort(keys, child):
-            return RATreeNode(symbol: RASymbol.sort, detail: keys.joined(separator: ", "),
+            return DiagramNode(symbol: RASymbol.sort, detail: keys.joined(separator: ", "),
                               isLeaf: false, children: [child.tree])
 
+        case let .limit(count, offset, child):
+            return DiagramNode(symbol: RASymbol.limit,
+                               detail: RANode.limitSubscript(count: count, offset: offset),
+                               isLeaf: false, children: [child.tree])
+
         case let .union(left, right):
-            return RATreeNode(symbol: RASymbol.union, detail: nil, isLeaf: false, children: [left.tree, right.tree])
+            return DiagramNode(symbol: RASymbol.union, detail: nil, isLeaf: false, children: [left.tree, right.tree])
 
         case let .intersect(left, right):
-            return RATreeNode(symbol: RASymbol.intersect, detail: nil, isLeaf: false, children: [left.tree, right.tree])
+            return DiagramNode(symbol: RASymbol.intersect, detail: nil, isLeaf: false, children: [left.tree, right.tree])
 
         case let .difference(left, right):
-            return RATreeNode(symbol: RASymbol.difference, detail: nil, isLeaf: false, children: [left.tree, right.tree])
+            return DiagramNode(symbol: RASymbol.difference, detail: nil, isLeaf: false, children: [left.tree, right.tree])
         }
     }
 }

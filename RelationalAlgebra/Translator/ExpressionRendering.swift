@@ -47,6 +47,8 @@ extension Expression {
             return "\(value.rendered) \(kw) (…)"
         case let .exists(_, negated):
             return "\(negated ? "NOT " : "")EXISTS (…)"
+        case let .quantifiedComparison(value, op, quantifier, _):
+            return "\(value.rendered) \(op) \(quantifier.rawValue) (…)"
         case let .isNull(expr, negated):
             return "\(expr.rendered) IS \(negated ? "NOT " : "")NULL"
         case let .list(items):

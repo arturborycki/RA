@@ -13,10 +13,11 @@ struct FormulaView: View {
     @EnvironmentObject private var viewModel: AppViewModel
 
     var body: some View {
-        if let expression = viewModel.translation?.finalExpression {
+        if let translation = viewModel.translation {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    PrettyFormulaCard(expression: expression)
+                    FidelityBanner(diagnostics: translation.diagnostics)
+                    PrettyFormulaCard(expression: translation.finalExpression)
                     legend
                 }
                 .padding()
@@ -74,12 +75,8 @@ struct PrettyFormulaCard: View {
                 Label("Relational algebra expression", systemImage: "function")
                     .font(.headline)
                 Spacer()
-                Button {
-                    UIPasteboard.general.string = pretty
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                }
-                .buttonStyle(.borderless)
+                ExportMenu(exports: [("Unicode", expression.formula),
+                                     ("LaTeX", expression.latex)])
             }
 
             ScrollView(.horizontal, showsIndicators: true) {

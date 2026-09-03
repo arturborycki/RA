@@ -10,6 +10,22 @@
 
 import Foundation
 
+/// A `CREATE TABLE` seen in the editor buffer.
+///
+/// Only the column names matter here, and only their *order* really matters:
+/// a domain-calculus atom is positional — `Employee(n, s, d)` — so this is the
+/// one source that makes DRC exact rather than approximate.
+struct TableDeclaration: Equatable {
+    var name: String
+    var columns: [String]
+}
+
+/// What the editor holds: any number of table declarations, then one query.
+struct SQLScript: Equatable {
+    var declarations: [TableDeclaration]
+    var query: SQLQuery
+}
+
 /// A parsed SQL query. A query is either a single `SELECT` block or two blocks
 /// combined with a set operator (`UNION`, `INTERSECT`, `EXCEPT`).
 indirect enum SQLQuery: Equatable {
@@ -24,6 +40,11 @@ struct CommonTableExpression: Equatable {
     var name: String
     var columns: [String]
     var query: SQLQuery
+    /// `WITH RECURSIVE`. Neither the algebra nor first-order calculus can
+    /// express a fixed point, so this is recorded in order to be *reported*:
+    /// translating a recursive CTE as though it were an ordinary one would be
+    /// a wrong answer presented as an exact one.
+    var isRecursive: Bool = false
 }
 
 enum SetOperator: String, Equatable {
@@ -45,6 +66,8 @@ struct SelectStatement: Equatable {
     var having: Expression? = nil
     var orderBy: [OrderItem] = []
     var limit: Int? = nil
+    /// `OFFSET n` / the leading count of MySQL's `LIMIT offset, count`.
+    var offset: Int? = nil
 }
 
 /// One entry in the `SELECT` list.
@@ -78,11 +101,23 @@ struct Join: Equatable {
     var on: Expression?
     /// `USING (a, b)` column list, when present.
     var using: [String]
+    /// `NATURAL JOIN` — equate every column the two sides share. Which columns
+    /// those are is a question for the schema, not the syntax.
+    var natural: Bool = false
 }
 
 struct OrderItem: Equatable {
     var expression: Expression
     var descending: Bool
+    /// `NULLS FIRST` / `NULLS LAST`, when the query says which.
+    var nullsFirst: Bool? = nil
+
+    /// `total ↓ nulls last` — what the sort annotation shows.
+    var rendered: String {
+        var text = "\(expression.rendered) \(descending ? "↓" : "↑")"
+        if let nullsFirst { text += nullsFirst ? " nulls first" : " nulls last" }
+        return text
+    }
 }
 
 /// A scalar / boolean expression. Kept intentionally generic — the translator
@@ -100,6 +135,10 @@ indirect enum Expression: Equatable {
     case between(value: Expression, lower: Expression, upper: Expression, negated: Bool)
     case inList(value: Expression, list: [Expression], negated: Bool)
     case inSubquery(value: Expression, query: SQLQuery, negated: Bool)
+    /// `x > ALL (…)` / `x > ANY (…)`. These lower directly to ∀ and ∃, which is
+    /// most of why they are worth parsing at all.
+    case quantifiedComparison(value: Expression, op: String,
+                              quantifier: SubqueryQuantifier, query: SQLQuery)
     case exists(query: SQLQuery, negated: Bool)
     case isNull(Expression, negated: Bool)
     case list([Expression])
@@ -115,6 +154,13 @@ indirect enum Expression: Equatable {
     case typedLiteral(type: String, value: String)
     /// `INTERVAL '90' DAY`
     case interval(value: String, unit: String)
+}
+
+/// Whether a sub-query comparison must hold for every row or for some row.
+/// `SOME` is a synonym for `ANY` in standard SQL.
+enum SubqueryQuantifier: String, Equatable {
+    case all = "ALL"
+    case any = "ANY"
 }
 
 /// One `WHEN condition THEN result` branch of a CASE expression.

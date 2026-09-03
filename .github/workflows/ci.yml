@@ -1,0 +1,115 @@
+name: Build and test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# A superseded run has nothing left to say, and a hung build must not hold the
+# macOS queue against the run that replaces it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # A full xcodebuild takes minutes and can hang; type-checking the module
+  # takes seconds and cannot. Keeping it a separate job means its diagnostics
+  # are readable even when the build job never finishes.
+  typecheck:
+    name: swiftc -typecheck
+    runs-on: macos-15
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: xcodebuild -version
+
+      # Growing subsets, so the output says which layer first produces the
+      # "circular reference" that xcodebuild reports with no source location.
+      - name: Type-check probes
+        run: |
+          SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          probe() {
+            echo "----- probe: $1 -----"
+            shift
+            xcrun --sdk iphonesimulator swiftc -typecheck \
+              -sdk "$SDK" -target arm64-apple-ios17.0-simulator -swift-version 5 \
+              "$@" > probe.out 2>&1 || true
+            grep -E "error:|warning:" probe.out | head -40 || echo "(clean)"
+            echo "----- end probe -----"
+          }
+          M="RelationalAlgebra/Models"
+          C="RelationalAlgebra/Calculus"
+          P="RelationalAlgebra/Parser"
+          T="RelationalAlgebra/Translator"
+          probe "models"            $M/*.swift
+          probe "models+parser"     $M/*.swift $P/*.swift
+          probe "models+calculus"   $M/*.swift $P/*.swift $C/*.swift
+          probe "non-view sources"  $M/*.swift $P/*.swift $C/*.swift $T/*.swift
+          probe "whole app"         $(find RelationalAlgebra -name '*.swift')
+
+  test:
+    name: xcodebuild test
+    runs-on: macos-15
+    needs: typecheck
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pick a real, available simulator rather than pinning a device name that
+      # changes with every Xcode release. Prefer an iPad — the layout is built
+      # for one — and fall back to whatever iOS simulator exists.
+      - name: Choose a simulator
+        id: sim
+        run: |
+          NAME=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          runtimes = json.load(sys.stdin)["devices"]
+          devices = [d for rt, ds in runtimes.items() if "iOS" in rt for d in ds]
+          ipads = [d["name"] for d in devices if "iPad" in d["name"]]
+          print((ipads or [d["name"] for d in devices])[0])
+          ')
+          if [ -z "$NAME" ]; then echo "No iOS simulator available"; exit 1; fi
+          echo "Using simulator: $NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      # Two things this step is careful about. A test that loops forever should
+      # be a failing test, not a job that burns its whole allowance and reports
+      # nothing — hence the execution allowances. And -quiet suppresses the
+      # assertion text, leaving a list of failing test names that says nothing
+      # about why — so the full transcript goes to the log and only the
+      # interesting lines are echoed live.
+      - name: Build and test
+        timeout-minutes: 20
+        run: |
+          set +e
+          xcodebuild test \
+            -project RelationalAlgebra.xcodeproj \
+            -scheme RelationalAlgebra \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 120 \
+            -maximum-test-execution-time-allowance 300 \
+            2>&1 | tee build.log \
+            | grep --line-buffered -E "error:|^Test Case .*(failed|passed)|\\*\\* (TEST|BUILD)"
+          # grep's own status is not the build's; take xcodebuild's.
+          exit ${PIPESTATUS[0]}
+
+      # xcodebuild interleaves diagnostics with thousands of lines of command
+      # echoes. Repeat just the actionable lines at the very end of the log, so
+      # a failure can be read without scrolling through the whole transcript.
+      - name: Failure summary
+        if: failure()
+        run: |
+          echo "===== compiler errors and assertion failures ====="
+          grep -E "error:" build.log \
+            | grep -v "^ *cd " \
+            | sed 's#/Users/runner/work/RA/RA/##' | head -60 || true
+          echo "===== last lines of the log (where a hang would stop) ====="
+          tail -30 build.log | sed 's#/Users/runner/work/RA/RA/##' || true
+          echo "===== end ====="

@@ -25,16 +25,23 @@ enum ResultTab: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @EnvironmentObject private var viewModel: AppViewModel
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @AppStorage("appTheme") private var appTheme: AppTheme = .system
-    @State private var selectedTab: ResultTab = .steps
+    @AppStorage("notation") private var notation: Notation = .ra
+    @AppStorage("resultTab") private var selectedTab: ResultTab = .steps
+    @AppStorage("phoneTab") private var phoneTab: PhoneTab = .sql
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var phoneTab: PhoneTab = .sql
 
     var body: some View {
         Group {
-            if horizontalSizeClass == .compact {
-                compactLayout
+            // A two-column split view collapses on a phone, and what it
+            // collapses to is the editor alone — the notations, which are the
+            // point of the app, are behind a back button most people never
+            // look for. At compact width the two panes become two tabs
+            // instead, so switching to a notation is one obvious tap.
+            if sizeClass == .compact {
+                phoneLayout
             } else {
                 splitLayout
             }
@@ -42,15 +49,14 @@ struct ContentView: View {
         .preferredColorScheme(appTheme.colorScheme)
     }
 
-    // iPad / regular width: editor and results side by side.
     private var splitLayout: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             EditorView()
                 .navigationTitle("SQL")
                 .navigationBarTitleDisplayMode(.inline)
         } detail: {
-            ResultsView(selectedTab: $selectedTab)
-                .navigationTitle("Relational Algebra")
+            ResultsView(notation: $notation, selectedTab: $selectedTab)
+                .navigationTitle(notation.title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -59,6 +65,53 @@ struct ContentView: View {
                 }
         }
         .navigationSplitViewStyle(.balanced)
+    }
+
+    private var phoneLayout: some View {
+        TabView(selection: $phoneTab) {
+            NavigationStack {
+                EditorView()
+                    .navigationTitle("SQL")
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+            .tabItem { Label(PhoneTab.sql.label, systemImage: PhoneTab.sql.systemImage) }
+            .tag(PhoneTab.sql)
+
+            NavigationStack {
+                ResultsView(notation: $notation, selectedTab: $selectedTab)
+                    .navigationTitle(notation.title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            ThemePicker(theme: $appTheme)
+                        }
+                    }
+            }
+            .tabItem { Label(PhoneTab.result.label, systemImage: PhoneTab.result.systemImage) }
+            .tag(PhoneTab.result)
+        }
+    }
+}
+
+/// The two halves of the iPad layout, as tabs for a phone.
+enum PhoneTab: String, CaseIterable, Identifiable {
+    case sql
+    case result
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .sql:    return "SQL"
+        case .result: return "Notation"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .sql:    return "text.alignleft"
+        case .result: return "function"
+        }
     }
 
     // iPhone / compact width: tabs, since a split view would hide the results.
@@ -108,10 +161,23 @@ struct ThemePicker: View {
     }
 }
 
-/// The right-hand results pane with a tab picker and error banner.
+/// The right-hand results pane. Two orthogonal pickers: which notation to show,
+/// and which view of it. The view picker is hidden when the selected notation
+/// offers only one, so the chrome grows only as the notations do.
 struct ResultsView: View {
     @EnvironmentObject private var viewModel: AppViewModel
+    @Binding var notation: Notation
     @Binding var selectedTab: ResultTab
+
+    private var tabs: [ResultTab] { notation.availableTabs }
+
+    /// The selected tab, corrected to one this notation can actually show.
+    private var activeTab: ResultTab {
+        tabs.contains(selectedTab) ? selectedTab : (tabs.first ?? .formula)
+    }
+
+    /// Compare mode shows every notation at once, so it has no view axis.
+    private var showsViewPicker: Bool { tabs.count > 1 }
 
     var body: some View {
         // GeometryReader resolves to the detail area's *actual* finite size.
@@ -119,12 +185,19 @@ struct ResultsView: View {
         // views a bounded viewport, so they scroll instead of overflowing.
         GeometryReader { geo in
             VStack(spacing: 0) {
-                Picker("View", selection: $selectedTab) {
-                    ForEach(ResultTab.allCases) { tab in
-                        Label(tab.rawValue, systemImage: tab.systemImage).tag(tab)
+                VStack(spacing: 10) {
+                    NotationPicker(notation: $notation)
+
+                    if showsViewPicker {
+                        Picker("View", selection: $selectedTab) {
+                            ForEach(tabs) { tab in
+                                Label(tab == .diagram ? notation.diagramLabel : tab.rawValue,
+                                      systemImage: tab.systemImage).tag(tab)
+                            }
+                        }
+                        .pickerStyle(.segmented)
                     }
                 }
-                .pickerStyle(.segmented)
                 .padding()
 
                 if let error = viewModel.errorMessage {
@@ -145,10 +218,28 @@ struct ResultsView: View {
 
     @ViewBuilder
     private var resultContent: some View {
-        switch selectedTab {
-        case .steps:   StepsView()
-        case .formula: FormulaView()
-        case .diagram: TreeView()
+        switch notation {
+        case .ra:
+            switch activeTab {
+            case .steps:   StepsView()
+            case .formula: FormulaView()
+            case .diagram: TreeView(root: viewModel.tree)
+            }
+        case .compare:
+            CompareView()
+
+        case .trc, .drc:
+            if let translation = viewModel.calculus(notation) {
+                switch activeTab {
+                case .steps:   CalculusStepsView(translation: translation)
+                case .diagram: TreeView(root: translation.simplified.scopeTree)
+                default:       CalculusFormulaView(translation: translation)
+                }
+            } else {
+                EmptyResultView(systemImage: "function",
+                                message: "The \(notation.title.lowercased()) expression appears " +
+                                         "here once the SQL parses.")
+            }
         }
     }
 }

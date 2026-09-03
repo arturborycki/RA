@@ -23,18 +23,86 @@ final class SQLParser {
         self.tokens = tokens
     }
 
-    /// Convenience: lex + parse a source string.
+    /// Convenience: lex + parse a source string down to its query.
     static func parse(_ source: String) throws -> SQLQuery {
+        try parseScript(source).query
+    }
+
+    /// Lex + parse a whole buffer: any number of `CREATE TABLE` statements
+    /// followed by the query they describe. Declaring the tables is what lets
+    /// the domain calculus write a positional atom with a trustworthy arity.
+    static func parseScript(_ source: String) throws -> SQLScript {
         let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw ParseError(message: "Empty query.", position: 0)
         }
         let tokens = try Lexer(trimmed).tokenize()
         let parser = SQLParser(tokens: tokens)
+        let declarations = try parser.parseTableDeclarations()
         let query = try parser.parseQuery()
         parser.consumeOptionalSemicolon()
         try parser.expectEnd()
-        return query
+        return SQLScript(declarations: declarations, query: query)
+    }
+
+    // MARK: - CREATE TABLE
+
+    private func parseTableDeclarations() throws -> [TableDeclaration] {
+        var declarations: [TableDeclaration] = []
+        while checkIdentifierKeyword("CREATE") || checkKeyword("CREATE") {
+            declarations.append(try parseTableDeclaration())
+            consumeOptionalSemicolon()
+        }
+        return declarations
+    }
+
+    private func parseTableDeclaration() throws -> TableDeclaration {
+        _ = advance() // CREATE
+        guard matchIdentifierKeyword("TABLE") || matchKeyword("TABLE") else {
+            throw ParseError(message: "Only CREATE TABLE is supported here.",
+                             position: current.position)
+        }
+        // `IF NOT EXISTS` is noise for our purposes.
+        if matchKeyword("IF") {
+            _ = matchKeyword("NOT")
+            _ = matchKeyword("EXISTS")
+        }
+        let name = try expect(kind: .identifier, "a table name").text
+        _ = try expect(kind: .leftParen, "'(' after the table name")
+
+        var columns: [String] = []
+        repeat {
+            if check(kind: .rightParen) { break }
+            if let column = try parseColumnDefinition() {
+                columns.append(column)
+            }
+        } while consumeCommaIfPresent()
+
+        _ = try expect(kind: .rightParen, "')' closing the column list")
+        return TableDeclaration(name: name, columns: columns)
+    }
+
+    /// One entry in a column list: a column definition, whose name we keep, or
+    /// a table constraint, which names no column of its own. Types, defaults and
+    /// inline constraints are skipped wholesale — only names and order matter.
+    private func parseColumnDefinition() throws -> String? {
+        let isConstraint = ["PRIMARY", "FOREIGN", "UNIQUE", "CHECK", "CONSTRAINT", "KEY", "INDEX"]
+            .contains { checkIdentifierKeyword($0) || checkKeyword($0) }
+        let name = isConstraint ? nil : (check(kind: .identifier) ? advance().text : nil)
+        skipToEndOfColumnEntry()
+        return name
+    }
+
+    /// Advance to the comma or `)` that ends this entry, stepping over nested
+    /// parentheses so that `DECIMAL(10, 2)` and `REFERENCES D(id)` do not end it.
+    private func skipToEndOfColumnEntry() {
+        var depth = 0
+        while !check(kind: .eof) {
+            if depth == 0, check(kind: .comma) || check(kind: .rightParen) { return }
+            if check(kind: .leftParen) { depth += 1 }
+            if check(kind: .rightParen) { depth -= 1 }
+            _ = advance()
+        }
     }
 
     // MARK: - Token cursor
@@ -127,7 +195,7 @@ final class SQLParser {
     /// `WITH [RECURSIVE] name [(cols)] AS ( query ) [, …] <body>`
     private func parseWith() throws -> SQLQuery {
         _ = advance() // WITH
-        _ = matchIdentifierKeyword("RECURSIVE")
+        let recursive = matchIdentifierKeyword("RECURSIVE")
         var ctes: [CommonTableExpression] = []
         repeat {
             let name = try expect(kind: .identifier, "a CTE name").text
@@ -144,7 +212,8 @@ final class SQLParser {
             _ = try expect(kind: .leftParen, "'(' before the CTE query")
             let query = try parseQuery()
             _ = try expect(kind: .rightParen, "')'")
-            ctes.append(CommonTableExpression(name: name, columns: columns, query: query))
+            ctes.append(CommonTableExpression(name: name, columns: columns, query: query,
+                                              isRecursive: recursive))
         } while consumeCommaIfPresent()
 
         let body = try parseQuery()
@@ -212,11 +281,14 @@ final class SQLParser {
         if matchKeyword("LIMIT") {
             let tok = try expect(kind: .number, "a number after LIMIT")
             stmt.limit = Int(tok.text)
-            // Optional `LIMIT offset, count` or `OFFSET n` — consume leniently.
-            if consumeCommaIfPresent(), check(kind: .number) { stmt.limit = Int(advance().text) }
+            // MySQL's `LIMIT offset, count`: the first number was the offset.
+            if consumeCommaIfPresent(), check(kind: .number) {
+                stmt.offset = stmt.limit
+                stmt.limit = Int(advance().text)
+            }
         }
         if matchIdentifierKeyword("OFFSET") {
-            if check(kind: .number) { _ = advance() }
+            if check(kind: .number) { stmt.offset = Int(advance().text) }
             _ = matchIdentifierKeyword("ROWS") || matchIdentifierKeyword("ROW")
         }
         // `FETCH FIRST n ROWS ONLY`
@@ -335,6 +407,10 @@ final class SQLParser {
         var joins: [Join] = []
         while true {
             let kind: JoinKind
+            // `NATURAL` prefixes any of the join kinds below and replaces the
+            // ON/USING clause: the condition is every column the two sides
+            // share, which is a question for the schema rather than the syntax.
+            let natural = matchIdentifierKeyword("NATURAL")
             if matchKeyword("CROSS") {
                 try expectKeyword("JOIN")
                 kind = .cross
@@ -355,6 +431,10 @@ final class SQLParser {
                 kind = .full
             } else if matchKeyword("JOIN") {
                 kind = .inner
+            } else if natural {
+                throw ParseError(message: "Expected JOIN after NATURAL but found " +
+                                          "'\(currentDescription)'.",
+                                 position: current.position)
             } else {
                 break
             }
@@ -373,7 +453,7 @@ final class SQLParser {
                 }
                 _ = try expect(kind: .rightParen, "')'")
             }
-            joins.append(Join(kind: kind, table: table, on: on, using: using))
+            joins.append(Join(kind: kind, table: table, on: on, using: using, natural: natural))
         }
         return joins
     }
@@ -385,11 +465,13 @@ final class SQLParser {
             var descending = false
             if matchKeyword("DESC") { descending = true }
             else { _ = matchKeyword("ASC") }
-            // Optional `NULLS FIRST` / `NULLS LAST` — accepted and ignored.
+            var nullsFirst: Bool? = nil
             if matchIdentifierKeyword("NULLS") {
-                _ = matchIdentifierKeyword("FIRST") || matchIdentifierKeyword("LAST")
+                if matchIdentifierKeyword("FIRST") { nullsFirst = true }
+                else if matchIdentifierKeyword("LAST") { nullsFirst = false }
             }
-            items.append(OrderItem(expression: expr, descending: descending))
+            items.append(OrderItem(expression: expr, descending: descending,
+                                   nullsFirst: nullsFirst))
         } while consumeCommaIfPresent()
         return items
     }
@@ -486,14 +568,34 @@ final class SQLParser {
             return .binary(op: op, lhs: left, rhs: pattern)
         }
 
-        // Standard comparison operators.
+        // Standard comparison operators, optionally quantified over a
+        // sub-query: `x > ALL (…)`, `x > ANY (…)`, `x > SOME (…)`.
         if check(kind: .op), isComparisonOperator(current.text) {
             let op = advance().text
+            if let quantifier = matchSubqueryQuantifier() {
+                _ = try expect(kind: .leftParen, "'(' after \(quantifier.rawValue)")
+                let sub = try parseQuery()
+                _ = try expect(kind: .rightParen, "')'")
+                return .quantifiedComparison(value: left, op: op,
+                                             quantifier: quantifier, query: sub)
+            }
             let right = try parseAdditive()
             return .binary(op: op, lhs: left, rhs: right)
         }
 
         return left
+    }
+
+    /// Consume `ALL`, `ANY` or `SOME` when it directly precedes a sub-query.
+    /// `ALL` is a reserved word (`UNION ALL`); `ANY` and `SOME` are contextual,
+    /// so they stay ordinary identifiers and are matched by spelling — that
+    /// keeps them usable as column names everywhere else.
+    private func matchSubqueryQuantifier() -> SubqueryQuantifier? {
+        guard peekKind(1) == .leftParen else { return nil }
+        if matchKeyword("ALL")            { return .all }
+        if matchIdentifierKeyword("ANY")  { return .any }
+        if matchIdentifierKeyword("SOME") { return .any }
+        return nil
     }
 
     private func isComparisonOperator(_ s: String) -> Bool {
