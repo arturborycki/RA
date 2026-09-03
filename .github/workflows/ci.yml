@@ -77,12 +77,16 @@ jobs:
           echo "Using simulator: $NAME"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
-      # A test that loops forever should be a failing test, not a job that
-      # burns its whole allowance and reports nothing.
+      # Two things this step is careful about. A test that loops forever should
+      # be a failing test, not a job that burns its whole allowance and reports
+      # nothing — hence the execution allowances. And -quiet suppresses the
+      # assertion text, leaving a list of failing test names that says nothing
+      # about why — so the full transcript goes to the log and only the
+      # interesting lines are echoed live.
       - name: Build and test
         timeout-minutes: 20
         run: |
-          set -o pipefail
+          set +e
           xcodebuild test \
             -project RelationalAlgebra.xcodeproj \
             -scheme RelationalAlgebra \
@@ -91,7 +95,10 @@ jobs:
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 120 \
             -maximum-test-execution-time-allowance 300 \
-            -quiet 2>&1 | tee build.log
+            2>&1 | tee build.log \
+            | grep --line-buffered -E "error:|^Test Case .*(failed|passed)|\\*\\* (TEST|BUILD)"
+          # grep's own status is not the build's; take xcodebuild's.
+          exit ${PIPESTATUS[0]}
 
       # xcodebuild interleaves diagnostics with thousands of lines of command
       # echoes. Repeat just the actionable lines at the very end of the log, so
@@ -99,10 +106,10 @@ jobs:
       - name: Failure summary
         if: failure()
         run: |
-          echo "===== errors and test failures ====="
-          grep -E "error:|XCTAssertion|failed \(|Testing failed" build.log \
-            | grep -v "^ *cd " | grep -v "note: Emplaced" \
+          echo "===== compiler errors and assertion failures ====="
+          grep -E "error:" build.log \
+            | grep -v "^ *cd " \
             | sed 's#/Users/runner/work/RA/RA/##' | head -60 || true
           echo "===== last lines of the log (where a hang would stop) ====="
-          tail -40 build.log | sed 's#/Users/runner/work/RA/RA/##' || true
+          tail -30 build.log | sed 's#/Users/runner/work/RA/RA/##' || true
           echo "===== end ====="
