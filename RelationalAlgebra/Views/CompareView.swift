@@ -41,7 +41,12 @@ struct CompareView: View {
                         text: result.drc.simplifiedText(),
                         exports: exports(for: result.drc))
 
-                    FidelityBanner(diagnostics: result.trc.diagnostics)
+                    // Both lists: the domain lowering adds notes the tuple
+                    // form never has — an inferred arity above all — and each
+                    // dialect carries its own safety findings. Showing one
+                    // would hide the other on the screen that shows both.
+                    FidelityBanner(diagnostics: (result.trc.diagnostics
+                                                 + result.drc.diagnostics).deduplicated)
                 }
                 .padding()
             }

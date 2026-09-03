@@ -176,7 +176,13 @@ final class DRCLoweringEngine {
         switch term {
         case let .attribute(tuple, attribute):
             guard let mapping = mappings[tuple] else {
-                // No relation atom introduced this variable — nothing to explode.
+                // No relation atom introduced this variable — typically one left
+                // inside a sub-query that stayed opaque, so there is no column
+                // list to explode it into.
+                diagnostics.append(.annotated(
+                    "\(tuple.name).\(attribute)",
+                    "'\(tuple.name)' is not introduced by a relation atom here, so it has no " +
+                    "columns to explode into; the reference keeps its tuple form."))
                 return .opaque("\(tuple.name).\(attribute)")
             }
             if let variable = mapping.variable(for: attribute) {

@@ -391,8 +391,9 @@ beautifully and means something else.
   it is not a query optimizer and does not push selections down.
 - A sub-query carrying its own `GROUP BY`, `ORDER BY` or `LIMIT` cannot live
   inside a formula, so it is kept as an opaque atom and the reason is reported.
-- `¬∃x ( R(x) ∧ ¬φ )` is not yet rewritten to the equivalent `∀x ( R(x) → φ )`;
-  that rewrite belongs to the simplifier, alongside equality unification.
+- `¬∃x ( R(x) ∧ ¬φ )` **is** rewritten to `∀x ( R(x) → φ )`, which is where
+  SQL's doubly-negated division query turns back into "for every". A plain
+  `¬∃x ( R(x) )` is left alone: `∀x ( ¬R(x) )` is no clearer.
 - Aggregation is an **extension** to the calculus, not part of it — it is
   labelled as one everywhere it appears. `GROUP BY ROLLUP` / `CUBE` /
   `GROUPING SETS` produce several groupings at once, which one set of grouping
@@ -403,7 +404,9 @@ beautifully and means something else.
   [`docs/DESIGN-CALCULUS.md`](docs/DESIGN-CALCULUS.md).
 - `ORDER BY` (τ) and duplicate handling are the usual pragmatic extensions to
   the pure (set-based) relational algebra.
-- Only the `SELECT` surface is parsed; DML/DDL is out of scope.
+- Only the `SELECT` surface is translated. `CREATE TABLE` is parsed, but purely
+  to declare column names and order for the domain calculus — nothing is
+  executed, and the rest of DDL and all of DML are out of scope.
 
 ## License
 

@@ -972,6 +972,72 @@ final class CalculusTests: XCTestCase {
         })
     }
 
+    func testStarInAGroupedQueryIsReported() throws {
+        // Grouping collapses rows, so a star does not name a column the group
+        // determines. It stays verbatim — and has to say so.
+        let translation = try translate("SELECT * FROM Employee GROUP BY dept")
+        XCTAssertTrue(translation.diagnostics.contains { $0.construct == "*" },
+                      translation.diagnostics.map(\.construct).description)
+    }
+
+    func testQualifiedStarWithAnUnknownQualifierIsReported() throws {
+        let translation = try translate("SELECT x.* FROM Employee e")
+        XCTAssertTrue(translation.diagnostics.contains { $0.construct == "x.*" },
+                      translation.diagnostics.map(\.construct).description)
+    }
+
+    /// The guarantee `CalcTerm.opaque` documents, checked rather than asserted:
+    /// nothing is carried verbatim without a note saying it was.
+    func testNoOpaqueTermGoesUnreported() throws {
+        let awkward = [
+            "SELECT * FROM Employee GROUP BY dept",
+            "SELECT x.* FROM Employee e",
+            "SELECT CASE WHEN salary > 1 THEN 'high' ELSE 'low' END AS band FROM Employee",
+            "SELECT RANK() OVER (PARTITION BY dept ORDER BY salary DESC) AS r FROM Employee",
+            "SELECT e.name, (SELECT COUNT(*) FROM Orders o) AS total FROM Employee e",
+        ]
+        for sql in awkward + SampleQueries.all.map(\.text) {
+            for translation in [try translate(sql), try lowerToDRC(sql)] {
+                let opaque = Self.opaqueTerms(in: translation.root)
+                guard !opaque.isEmpty else { continue }
+                XCTAssertFalse(translation.diagnostics.isEmpty,
+                               "\(translation.dialect) carried \(opaque) with no diagnostic: \(sql)")
+            }
+        }
+    }
+
+    /// Every `.opaque` term anywhere in an expression.
+    private static func opaqueTerms(in expression: CalcExpression) -> [String] {
+        func inTerm(_ term: CalcTerm) -> [String] {
+            switch term {
+            case let .opaque(text):               return [text]
+            case let .application(_, args, _):    return args.flatMap(inTerm)
+            case let .binaryOp(_, lhs, rhs):      return inTerm(lhs) + inTerm(rhs)
+            case .variable, .attribute, .literal: return []
+            }
+        }
+        func inFormula(_ formula: CalcFormula) -> [String] {
+            switch formula {
+            case let .relationAtom(_, terms, _):             return terms.flatMap(inTerm)
+            case let .comparison(lhs, _, rhs):               return inTerm(lhs) + inTerm(rhs)
+            case let .and(parts), let .or(parts):            return parts.flatMap(inFormula)
+            case let .not(inner):                            return inFormula(inner)
+            case let .exists(_, body), let .forAll(_, body): return inFormula(body)
+            case let .implies(lhs, rhs):                     return inFormula(lhs) + inFormula(rhs)
+            case let .predicate(_, terms):                   return terms.flatMap(inTerm)
+            case let .aggregateBinding(_, _, _, element, _, condition):
+                return (element.map(inTerm) ?? []) + inFormula(condition)
+            case .constant:                                  return []
+            }
+        }
+        switch expression {
+        case let .query(query):
+            return query.result.flatMap { inTerm($0.term) } + inFormula(query.formula)
+        case let .setOperation(_, left, right):
+            return opaqueTerms(in: left) + opaqueTerms(in: right)
+        }
+    }
+
     func testCastCarriesNoWarningBecauseNothingIsLost() throws {
         // A cast is an ordinary scalar function; it needs no caveat.
         let translation = try translate("SELECT CAST(salary AS INTEGER) AS s FROM Employee")

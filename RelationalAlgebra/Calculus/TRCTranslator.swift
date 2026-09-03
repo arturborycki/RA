@@ -390,6 +390,10 @@ final class TRCBuilder {
 
         for item in stmt.projections {
             guard case let .expression(expr, alias) = item else {
+                diagnostics.append(.annotated(
+                    item.attributeLabel,
+                    "'\(item.attributeLabel)' in a grouped query does not name a column the " +
+                    "grouping determines, so it cannot be expanded into one; it is kept verbatim."))
                 result.append(ResultColumn(term: .opaque(item.attributeLabel)))
                 continue
             }
@@ -686,6 +690,10 @@ final class TRCBuilder {
                 if let variable = scope.variable(forQualifier: qualifier) {
                     columns.append(contentsOf: expandStar(over: [variable]))
                 } else {
+                    diagnostics.append(.annotated(
+                        "\(qualifier).*",
+                        "'\(qualifier)' does not name a table or alias in scope, so which columns " +
+                        "it stands for is unknown; it is kept verbatim."))
                     columns.append(ResultColumn(term: .opaque("\(qualifier).*")))
                 }
             case let .expression(expr, alias):
@@ -1206,6 +1214,10 @@ final class TRCBuilder {
             return .attribute(owners[0], name)
         }
         if candidates.isEmpty {
+            diagnostics.append(.annotated(
+                name,
+                "'\(name)' is referenced with no relation in scope to attribute it to, so it is " +
+                "kept verbatim."))
             return .opaque(name)
         }
         diagnostics.append(.annotated(
