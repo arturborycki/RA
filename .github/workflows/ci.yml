@@ -6,16 +6,47 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A superseded run has nothing left to say, and the macOS queue is short.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: xcodebuild test
     runs-on: macos-15
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Show toolchain
         run: xcodebuild -version
+
+      # A full xcodebuild takes minutes and reports "circular reference" with no
+      # source location. Type-checking growing subsets of the module takes
+      # seconds each and says which layer first produces it, which is the one
+      # fact the xcodebuild diagnostic will not give up.
+      - name: Type-check probes
+        run: |
+          SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          probe() {
+            echo "----- probe: $1 -----"
+            shift
+            xcrun --sdk iphonesimulator swiftc -typecheck \
+              -sdk "$SDK" -target arm64-apple-ios17.0-simulator -swift-version 5 \
+              "$@" 2>&1 | grep -E "error:|note:" | head -40 || true
+            echo "----- end probe -----"
+          }
+          M="RelationalAlgebra/Models"
+          C="RelationalAlgebra/Calculus"
+          P="RelationalAlgebra/Parser"
+          T="RelationalAlgebra/Translator"
+          probe "models"            $M/*.swift
+          probe "models+parser"     $M/*.swift $P/*.swift
+          probe "models+calculus"   $M/*.swift $P/*.swift $C/*.swift
+          probe "non-view sources"  $M/*.swift $P/*.swift $C/*.swift $T/*.swift
+          probe "whole app"         $(find RelationalAlgebra -name '*.swift')
 
       # Pick a real, available simulator rather than pinning a device name that
       # changes with every Xcode release. Prefer an iPad — the layout is built
@@ -42,7 +73,6 @@ jobs:
             -scheme RelationalAlgebra \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
             CODE_SIGNING_ALLOWED=NO \
-            OTHER_SWIFT_FLAGS='$(inherited) -Xfrontend -debug-cycles' \
             -quiet 2>&1 | tee build.log
 
       # xcodebuild interleaves diagnostics with thousands of lines of command
@@ -52,11 +82,7 @@ jobs:
         if: failure()
         run: |
           echo "===== errors and test failures ====="
-          grep -E "error:|note:|XCTAssertion|failed \(|Testing failed" build.log \
+          grep -E "error:|XCTAssertion|failed \(|Testing failed" build.log \
             | grep -v "^ *cd " | grep -v "note: Emplaced" \
-            | sed 's#/Users/runner/work/RA/RA/##' | head -80 || true
+            | sed 's#/Users/runner/work/RA/RA/##' | head -60 || true
           echo "===== end ====="
-          echo "===== request-evaluator cycle ====="
-          awk '/CYCLE DETECTED/{n++} n==1' build.log \
-            | sed 's#/Users/runner/work/RA/RA/##' | head -120 || true
-          echo "===== end cycle ====="
