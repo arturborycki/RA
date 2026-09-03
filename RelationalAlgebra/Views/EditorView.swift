@@ -138,6 +138,20 @@ struct EditorView: View {
                 Label("Clear", systemImage: "trash")
             }
         }
+
+        // On an iPhone the software keyboard covers most of the screen and has
+        // no dismiss key of its own, so the editor supplies the usual one. The
+        // accessory bar exists only while something is being typed into, so the
+        // button appears exactly when it is wanted and never otherwise.
+        ToolbarItemGroup(placement: .keyboard) {
+            Spacer()
+            Button {
+                editorFocused = false
+            } label: {
+                Image(systemName: "keyboard.chevron.compact.down")
+            }
+            .accessibilityLabel("Hide keyboard")
+        }
     }
 
     // MARK: Actions

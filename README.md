@@ -226,6 +226,9 @@ is positional.
 ## Input methods
 
 - **Type** directly in the monospaced editor (live parsing, 250 ms debounce).
+  A dismiss-keyboard button sits at the right of the accessory bar above the
+  software keyboard, which matters on an iPhone where the keyboard covers most
+  of the editor and has no hide key of its own.
 - **Paste** from the clipboard.
 - **Import** a `.sql` / text file via the iOS document picker.
 - **Examples** menu, grouped: **Basics** (one construct at a time), **TPC-H**
