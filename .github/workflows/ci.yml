@@ -6,16 +6,20 @@ on:
   pull_request:
   workflow_dispatch:
 
-# A superseded run has nothing left to say, and the macOS queue is short.
+# A superseded run has nothing left to say, and a hung build must not hold the
+# macOS queue against the run that replaces it.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: xcodebuild test
+  # A full xcodebuild takes minutes and can hang; type-checking the module
+  # takes seconds and cannot. Keeping it a separate job means its diagnostics
+  # are readable even when the build job never finishes.
+  typecheck:
+    name: swiftc -typecheck
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
@@ -23,10 +27,8 @@ jobs:
       - name: Show toolchain
         run: xcodebuild -version
 
-      # A full xcodebuild takes minutes and reports "circular reference" with no
-      # source location. Type-checking growing subsets of the module takes
-      # seconds each and says which layer first produces it, which is the one
-      # fact the xcodebuild diagnostic will not give up.
+      # Growing subsets, so the output says which layer first produces the
+      # "circular reference" that xcodebuild reports with no source location.
       - name: Type-check probes
         run: |
           SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
@@ -35,7 +37,8 @@ jobs:
             shift
             xcrun --sdk iphonesimulator swiftc -typecheck \
               -sdk "$SDK" -target arm64-apple-ios17.0-simulator -swift-version 5 \
-              "$@" 2>&1 | grep -E "error:|note:" | head -40 || true
+              "$@" > probe.out 2>&1 || true
+            grep -E "error:|warning:" probe.out | head -40 || echo "(clean)"
             echo "----- end probe -----"
           }
           M="RelationalAlgebra/Models"
@@ -47,6 +50,15 @@ jobs:
           probe "models+calculus"   $M/*.swift $P/*.swift $C/*.swift
           probe "non-view sources"  $M/*.swift $P/*.swift $C/*.swift $T/*.swift
           probe "whole app"         $(find RelationalAlgebra -name '*.swift')
+
+  test:
+    name: xcodebuild test
+    runs-on: macos-15
+    needs: typecheck
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
 
       # Pick a real, available simulator rather than pinning a device name that
       # changes with every Xcode release. Prefer an iPad — the layout is built
@@ -65,7 +77,10 @@ jobs:
           echo "Using simulator: $NAME"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
+      # A test that loops forever should be a failing test, not a job that
+      # burns its whole allowance and reports nothing.
       - name: Build and test
+        timeout-minutes: 20
         run: |
           set -o pipefail
           xcodebuild test \
@@ -73,6 +88,9 @@ jobs:
             -scheme RelationalAlgebra \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
             CODE_SIGNING_ALLOWED=NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 120 \
+            -maximum-test-execution-time-allowance 300 \
             -quiet 2>&1 | tee build.log
 
       # xcodebuild interleaves diagnostics with thousands of lines of command
@@ -85,4 +103,6 @@ jobs:
           grep -E "error:|XCTAssertion|failed \(|Testing failed" build.log \
             | grep -v "^ *cd " | grep -v "note: Emplaced" \
             | sed 's#/Users/runner/work/RA/RA/##' | head -60 || true
+          echo "===== last lines of the log (where a hang would stop) ====="
+          tail -40 build.log | sed 's#/Users/runner/work/RA/RA/##' || true
           echo "===== end ====="
