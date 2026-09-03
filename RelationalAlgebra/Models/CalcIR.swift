@@ -72,6 +72,38 @@ indirect enum CalcTerm: Equatable {
 }
 
 extension CalcTerm {
+    /// Written out rather than derived.
+    ///
+    /// The synthesised `==` is what the Xcode 16.4 frontend walks into a
+    /// request cycle on when this file lands in one batch with several of its
+    /// users: "circular reference" with no source location, reproducible under
+    /// `xcodebuild` and absent under whole-module `-typecheck`. Spelling the
+    /// comparison out removes the derivation the cycle runs through. The
+    /// non-matching cases are listed rather than defaulted so that a new case
+    /// is a compile error here instead of a silently unequal pair.
+    static func == (lhs: CalcTerm, rhs: CalcTerm) -> Bool {
+        switch (lhs, rhs) {
+        case let (.variable(a), .variable(b)):
+            return a == b
+        case let (.attribute(aVar, aName), .attribute(bVar, bName)):
+            return aVar == bVar && aName == bName
+        case let (.literal(a), .literal(b)):
+            return a == b
+        case let (.application(aName, aArgs, aDistinct),
+                  .application(bName, bArgs, bDistinct)):
+            return aName == bName && aArgs == bArgs && aDistinct == bDistinct
+        case let (.binaryOp(aOp, aLHS, aRHS), .binaryOp(bOp, bLHS, bRHS)):
+            return aOp == bOp && aLHS == bLHS && aRHS == bRHS
+        case let (.opaque(a), .opaque(b)):
+            return a == b
+        case (.variable, _), (.attribute, _), (.literal, _),
+             (.application, _), (.binaryOp, _), (.opaque, _):
+            return false
+        }
+    }
+}
+
+extension CalcTerm {
     /// Every variable mentioned anywhere in this term.
     var variables: Set<CalcVar> {
         switch self {
@@ -126,6 +158,43 @@ indirect enum CalcFormula: Equatable {
     case aggregateBinding(result: CalcVar, function: String, distinct: Bool,
                           element: CalcTerm?, variables: [CalcVar], condition: CalcFormula)
     case constant(Bool)
+}
+
+extension CalcFormula {
+    /// Written out rather than derived, for the reason given on `CalcTerm.==`.
+    static func == (lhs: CalcFormula, rhs: CalcFormula) -> Bool {
+        switch (lhs, rhs) {
+        case let (.relationAtom(aName, aTerms, aKnown),
+                  .relationAtom(bName, bTerms, bKnown)):
+            return aName == bName && aTerms == bTerms && aKnown == bKnown
+        case let (.comparison(aLHS, aOp, aRHS), .comparison(bLHS, bOp, bRHS)):
+            return aLHS == bLHS && aOp == bOp && aRHS == bRHS
+        case let (.and(a), .and(b)):
+            return a == b
+        case let (.or(a), .or(b)):
+            return a == b
+        case let (.not(a), .not(b)):
+            return a == b
+        case let (.exists(aVars, aBody), .exists(bVars, bBody)):
+            return aVars == bVars && aBody == bBody
+        case let (.forAll(aVars, aBody), .forAll(bVars, bBody)):
+            return aVars == bVars && aBody == bBody
+        case let (.implies(aLHS, aRHS), .implies(bLHS, bRHS)):
+            return aLHS == bLHS && aRHS == bRHS
+        case let (.predicate(aText, aTerms), .predicate(bText, bTerms)):
+            return aText == bText && aTerms == bTerms
+        case let (.aggregateBinding(aResult, aFunc, aDistinct, aElement, aVars, aCond),
+                  .aggregateBinding(bResult, bFunc, bDistinct, bElement, bVars, bCond)):
+            return aResult == bResult && aFunc == bFunc && aDistinct == bDistinct
+                && aElement == bElement && aVars == bVars && aCond == bCond
+        case let (.constant(a), .constant(b)):
+            return a == b
+        case (.relationAtom, _), (.comparison, _), (.and, _), (.or, _), (.not, _),
+             (.exists, _), (.forAll, _), (.implies, _), (.predicate, _),
+             (.aggregateBinding, _), (.constant, _):
+            return false
+        }
+    }
 }
 
 extension CalcFormula {

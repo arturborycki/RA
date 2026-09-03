@@ -115,10 +115,13 @@ struct CalcRenderer {
         "{": "\\{", "}": "\\}",
         CalcSymbol.exists: "\\exists ", CalcSymbol.forAll: "\\forall ",
         CalcSymbol.and: "\\wedge", CalcSymbol.or: "\\vee", CalcSymbol.not: "\\neg ",
+        // `implies` and `renameArrow` are the same glyph. Listing both spellings
+        // makes this a dictionary literal with a duplicate key, which traps at
+        // run time — so one entry covers both arrows.
         CalcSymbol.implies: "\\rightarrow", CalcSymbol.union: "\\cup",
         CalcSymbol.intersect: "\\cap", CalcSymbol.difference: "\\setminus",
         CalcSymbol.openTuple: "\\langle ", CalcSymbol.closeTuple: "\\rangle ",
-        CalcSymbol.such: "\\mid", CalcSymbol.renameArrow: "\\to",
+        CalcSymbol.such: "\\mid",
         "≠": "\\neq", "≤": "\\leq", "≥": "\\geq", "…": "\\ldots",
         "↑": "\\uparrow", "↓": "\\downarrow"
     ]

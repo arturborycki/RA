@@ -227,7 +227,10 @@ final class DRCLoweringEngine {
                       "different order. Add a CREATE TABLE to make this atom exact."))
         }
 
-        let variables = attributes.map { allocate(for: $0, relation: relation) }
+        let stems = DRCLoweringEngine.mnemonicStems(of: attributes)
+        let variables = zip(attributes, stems).map {
+            allocate(for: $0, stem: $1, relation: relation)
+        }
         let mapping = TupleMapping(relation: relation, attributes: attributes,
                                    variables: variables, complete: complete)
         mappings[tuple] = mapping
@@ -240,16 +243,28 @@ final class DRCLoweringEngine {
         tuples.flatMap { mappings[$0]?.variables ?? [$0] }
     }
 
+    /// The part of each column name its mnemonic letter is taken from.
+    ///
+    /// Normally the whole name, so `dept_id` gives `d` — the column means "the
+    /// department", and that is what a reader should see. But a schema that
+    /// prefixes every column with its table (`l_orderkey`, `l_quantity`, TPC-H
+    /// throughout) would give all sixteen columns of a relation the same
+    /// letter, and `l, l₁, l₂, …` says nothing. So when *every* column shares
+    /// one prefix, that prefix is dropped and `orderkey` → `o`,
+    /// `quantity` → `q`.
+    static func mnemonicStems(of attributes: [String]) -> [String] {
+        let prefixes = attributes.map { attribute -> String in
+            guard let underscore = attribute.firstIndex(of: "_") else { return "" }
+            return String(attribute[attribute.startIndex..<underscore])
+        }
+        guard let shared = prefixes.first, !shared.isEmpty,
+              prefixes.allSatisfy({ $0 == shared }) else { return attributes }
+        return attributes.map { String($0.dropFirst(shared.count + 1)) }
+    }
+
     /// A mnemonic name taken from the attribute — `salary` → `s` — uniqued
     /// against everything already handed out.
-    ///
-    /// The name comes from the segment *after* the last underscore, because
-    /// schemas that prefix every column with the table (`l_orderkey`,
-    /// `l_quantity`, TPC-H throughout) would otherwise give every one of a
-    /// sixteen-column relation the same letter: `l, l₁, l₂, …` says nothing.
-    /// `orderkey` → `o` and `quantity` → `q` do.
-    private func allocate(for attribute: String, relation: String) -> CalcVar {
-        let stem = attribute.split(separator: "_").last.map(String.init) ?? attribute
+    private func allocate(for attribute: String, stem: String, relation: String) -> CalcVar {
         let letters = stem.lowercased().filter { $0.isLetter }
         var name = letters.isEmpty ? "x" : String(letters.first!)
         if usedNames.contains(name) {
