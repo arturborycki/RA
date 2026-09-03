@@ -42,6 +42,7 @@ jobs:
             -scheme RelationalAlgebra \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
             CODE_SIGNING_ALLOWED=NO \
+            OTHER_SWIFT_FLAGS='$(inherited) -Xfrontend -debug-cycles' \
             -quiet 2>&1 | tee build.log
 
       # xcodebuild interleaves diagnostics with thousands of lines of command
@@ -55,3 +56,7 @@ jobs:
             | grep -v "^ *cd " | grep -v "note: Emplaced" \
             | sed 's#/Users/runner/work/RA/RA/##' | head -80 || true
           echo "===== end ====="
+          echo "===== request-evaluator cycle ====="
+          awk '/CYCLE DETECTED/{n++} n==1' build.log \
+            | sed 's#/Users/runner/work/RA/RA/##' | head -120 || true
+          echo "===== end cycle ====="
