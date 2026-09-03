@@ -1045,6 +1045,52 @@ final class CalculusTests: XCTestCase {
         XCTAssertEqual(translation.diagnostics.warningCount, 0)
     }
 
+    // MARK: - Constructs that used to be dropped in silence
+
+    func testNaturalJoinEquatesEverySharedColumn() throws {
+        let text = try inline("""
+            CREATE TABLE Employee (id INT, name TEXT, dept_id INT);
+            CREATE TABLE Department (dept_id INT, title TEXT);
+            SELECT e.name FROM Employee e NATURAL JOIN Department d
+            """)
+        // dept_id is the only name the two share, so it is the whole condition.
+        XCTAssertTrue(text.contains("e.dept_id = d.dept_id"), text)
+        XCTAssertFalse(text.contains("e.id = d.id"), text)
+    }
+
+    func testNaturalJoinOverAGuessedSchemaSaysSo() throws {
+        let translation = try translate(
+            "SELECT e.name FROM Employee e NATURAL JOIN Department d WHERE e.dept_id = 1")
+        XCTAssertTrue(translation.diagnostics.contains { $0.construct == "NATURAL JOIN" },
+                      translation.diagnostics.map(\.construct).description)
+    }
+
+    func testRecursiveCTEIsReportedRatherThanFlattened() throws {
+        let translation = try translate("""
+            WITH RECURSIVE Reports AS (SELECT id FROM Employee)
+            SELECT id FROM Reports
+            """)
+        XCTAssertTrue(translation.diagnostics.contains {
+            $0.construct.hasPrefix("WITH RECURSIVE")
+        }, translation.diagnostics.map(\.construct).description)
+    }
+
+    func testOffsetIsAnnotatedAlongsideTheLimit() throws {
+        let translation = try translate("SELECT a FROM T ORDER BY a LIMIT 10 OFFSET 20")
+        let query = try onlyQuery(translation)
+        XCTAssertTrue(query.extensions.contains {
+            $0.kind == .limit && $0.rendered.contains("offset 20")
+        }, query.extensions.map(\.rendered).description)
+    }
+
+    func testNullsOrderingIsNotDiscarded() throws {
+        let translation = try translate("SELECT a FROM T ORDER BY a DESC NULLS LAST")
+        let query = try onlyQuery(translation)
+        XCTAssertTrue(query.extensions.contains {
+            $0.kind == .sort && $0.rendered.contains("nulls last")
+        }, query.extensions.map(\.rendered).description)
+    }
+
     // MARK: - Export styles
 
     func testAsciiStyleSpellsTheGlyphsOut() throws {

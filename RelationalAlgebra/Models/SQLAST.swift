@@ -40,6 +40,11 @@ struct CommonTableExpression: Equatable {
     var name: String
     var columns: [String]
     var query: SQLQuery
+    /// `WITH RECURSIVE`. Neither the algebra nor first-order calculus can
+    /// express a fixed point, so this is recorded in order to be *reported*:
+    /// translating a recursive CTE as though it were an ordinary one would be
+    /// a wrong answer presented as an exact one.
+    var isRecursive: Bool = false
 }
 
 enum SetOperator: String, Equatable {
@@ -61,6 +66,8 @@ struct SelectStatement: Equatable {
     var having: Expression? = nil
     var orderBy: [OrderItem] = []
     var limit: Int? = nil
+    /// `OFFSET n` / the leading count of MySQL's `LIMIT offset, count`.
+    var offset: Int? = nil
 }
 
 /// One entry in the `SELECT` list.
@@ -94,11 +101,23 @@ struct Join: Equatable {
     var on: Expression?
     /// `USING (a, b)` column list, when present.
     var using: [String]
+    /// `NATURAL JOIN` — equate every column the two sides share. Which columns
+    /// those are is a question for the schema, not the syntax.
+    var natural: Bool = false
 }
 
 struct OrderItem: Equatable {
     var expression: Expression
     var descending: Bool
+    /// `NULLS FIRST` / `NULLS LAST`, when the query says which.
+    var nullsFirst: Bool? = nil
+
+    /// `total ↓ nulls last` — what the sort annotation shows.
+    var rendered: String {
+        var text = "\(expression.rendered) \(descending ? "↓" : "↑")"
+        if let nullsFirst { text += nullsFirst ? " nulls first" : " nulls last" }
+        return text
+    }
 }
 
 /// A scalar / boolean expression. Kept intentionally generic — the translator

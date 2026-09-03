@@ -23,6 +23,9 @@ enum RASymbol {
     static let group          = "γ"   // GROUP BY + aggregation
     static let distinct       = "δ"   // DISTINCT (duplicate elimination)
     static let sort           = "τ"   // ORDER BY
+    /// Spelled out rather than given a glyph: row limiting has no agreed
+    /// symbol, and inventing one would teach a notation nobody else uses.
+    static let limit          = "LIMIT" // LIMIT / OFFSET / FETCH FIRST
     static let union          = "∪"
     static let intersect      = "∩"
     static let difference     = "−"
@@ -49,11 +52,27 @@ indirect enum RANode: Equatable {
     case distinct(child: RANode)
     /// τ_{sort keys}
     case sort(keys: [String], child: RANode)
+    /// LIMIT_{n [offset m]} — row limiting. Like τ, an extension to the
+    /// classical set-based algebra rather than one of Codd's operators, and
+    /// spelled out rather than given an invented glyph for that reason.
+    case limit(count: Int?, offset: Int?, child: RANode)
     case union(left: RANode, right: RANode)
     case intersect(left: RANode, right: RANode)
     case difference(left: RANode, right: RANode)
 
     enum OuterKind: Equatable { case left, right, full }
+}
+
+extension RANode {
+    /// `10`, `10 offset 20`, or just `offset 20` when only an offset was given.
+    static func limitSubscript(count: Int?, offset: Int?) -> String {
+        switch (count, offset) {
+        case let (count?, offset?): return "\(count) offset \(offset)"
+        case let (count?, nil):     return "\(count)"
+        case let (nil, offset?):    return "offset \(offset)"
+        case (nil, nil):            return ""
+        }
+    }
 }
 
 // MARK: - Linear formula rendering
@@ -117,6 +136,9 @@ extension RANode {
             return unary(RASymbol.distinct, child)
         case let .sort(keys, child):
             return unary("\(RASymbol.sort)[\(keys.joined(separator: ", "))]", child)
+        case let .limit(count, offset, child):
+            return unary("\(RASymbol.limit)[\(RANode.limitSubscript(count: count, offset: offset))]",
+                         child)
         case let .union(lhs, rhs):
             return binary(RASymbol.union, lhs, rhs)
         case let .intersect(lhs, rhs):
@@ -177,6 +199,10 @@ extension RANode {
 
         case let .sort(keys, child):
             return "\(RASymbol.sort)[\(keys.joined(separator: ", "))] ( \(child.formula) )"
+
+        case let .limit(count, offset, child):
+            let sub = RANode.limitSubscript(count: count, offset: offset)
+            return "\(RASymbol.limit)[\(sub)] ( \(child.formula) )"
 
         case let .union(left, right):
             return "( \(left.formula) \(RASymbol.union) \(right.formula) )"
@@ -243,6 +269,10 @@ extension RANode {
         case let .sort(keys, child):
             let list = keys.map { RANode.escape($0) }.joined(separator: ", ")
             return "\\tau_{\(list)}( \(child.latex) )"
+
+        case let .limit(count, offset, child):
+            let sub = RANode.escape(RANode.limitSubscript(count: count, offset: offset))
+            return "\\mathrm{LIMIT}_{\(sub)}( \(child.latex) )"
 
         case let .union(left, right):
             return "( \(left.latex) \\cup \(right.latex) )"
@@ -338,6 +368,11 @@ extension RANode {
         case let .sort(keys, child):
             return DiagramNode(symbol: RASymbol.sort, detail: keys.joined(separator: ", "),
                               isLeaf: false, children: [child.tree])
+
+        case let .limit(count, offset, child):
+            return DiagramNode(symbol: RASymbol.limit,
+                               detail: RANode.limitSubscript(count: count, offset: offset),
+                               isLeaf: false, children: [child.tree])
 
         case let .union(left, right):
             return DiagramNode(symbol: RASymbol.union, detail: nil, isLeaf: false, children: [left.tree, right.tree])

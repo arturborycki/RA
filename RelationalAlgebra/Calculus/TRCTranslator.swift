@@ -154,6 +154,14 @@ final class TRCBuilder {
 
         case let .with(ctes, body):
             for cte in ctes {
+                if cte.isRecursive {
+                    diagnostics.append(.annotated(
+                        "WITH RECURSIVE \(cte.name)",
+                        "A recursive CTE denotes a least fixed point. First-order calculus has no " +
+                        "fixed point — that is exactly the expressiveness it lacks, and why " +
+                        "transitive closure is the textbook example of a query it cannot state. " +
+                        "Only the non-recursive reading is shown."))
+                }
                 let expression = nested { build(cte.query, outer: outer) }
                 definitions.append(CalcDefinition(name: cte.name, expression: expression))
                 emitStep(title: "Common table expression", clause: "WITH \(cte.name)",
@@ -664,6 +672,9 @@ final class TRCBuilder {
         if let on = join.on {
             return [formula(on, scope: scope)]
         }
+        if join.natural {
+            return naturalJoinConditions(scope: scope)
+        }
         if !join.using.isEmpty {
             // USING (a, b) is an equality between the two most recently bound
             // variables on each shared column.
@@ -676,6 +687,51 @@ final class TRCBuilder {
             }
         }
         return []
+    }
+
+    /// `NATURAL JOIN` equates every column the two sides share, so which
+    /// columns those are has to come from the schema. Where the schema was
+    /// reconstructed from the query rather than declared, the shared set is a
+    /// guess and says so — a natural join over a guessed column list is
+    /// exactly the case where a silent answer would be wrong.
+    private func naturalJoinConditions(scope: TupleScope) -> [CalcFormula] {
+        let variables = scope.localVariables
+        guard variables.count >= 2 else { return [] }
+        let right = variables[variables.count - 1]
+        let left = variables[variables.count - 2]
+
+        guard let leftRelation = left.relation, let rightRelation = right.relation,
+              let leftSchema = schema.schema(for: leftRelation),
+              let rightSchema = schema.schema(for: rightRelation) else {
+            diagnostics.append(.annotated(
+                "NATURAL JOIN",
+                "Neither side's columns are known here, so the shared columns a natural join " +
+                "equates could not be worked out. No condition is shown."))
+            return []
+        }
+
+        let rightNames = Set(rightSchema.attributes.map { $0.lowercased() })
+        let shared = leftSchema.attributes.filter { rightNames.contains($0.lowercased()) }
+
+        guard !shared.isEmpty else {
+            diagnostics.append(.annotated(
+                "NATURAL JOIN",
+                "'\(leftRelation)' and '\(rightRelation)' have no column name in common as far " +
+                "as this query shows, so the natural join degenerates to a cartesian product."))
+            return []
+        }
+
+        if !leftSchema.arityKnown || !rightSchema.arityKnown {
+            diagnostics.append(.annotated(
+                "NATURAL JOIN",
+                "The shared columns (\(shared.joined(separator: ", "))) are taken from column " +
+                "lists this query only implies. Declare '\(leftRelation)' and " +
+                "'\(rightRelation)' with CREATE TABLE to be sure the join is over all of them."))
+        }
+
+        return shared.map { column in
+            .comparison(lhs: .attribute(left, column), op: "=", rhs: .attribute(right, column))
+        }
     }
 
     // MARK: SELECT list
@@ -749,11 +805,13 @@ final class TRCBuilder {
             result.append(CalcExtension(kind: .having, rendered: "having \(having.rendered)"))
         }
         if !stmt.orderBy.isEmpty {
-            let keys = stmt.orderBy.map { "\($0.expression.rendered) \($0.descending ? "↓" : "↑")" }
+            let keys = stmt.orderBy.map(\.rendered)
             result.append(CalcExtension(kind: .sort, rendered: "sort by \(keys.joined(separator: ", "))"))
         }
-        if let limit = stmt.limit {
-            result.append(CalcExtension(kind: .limit, rendered: "limit \(limit)"))
+        if stmt.limit != nil || stmt.offset != nil {
+            result.append(CalcExtension(
+                kind: .limit,
+                rendered: "limit " + RANode.limitSubscript(count: stmt.limit, offset: stmt.offset)))
         }
         return result
     }
@@ -780,10 +838,11 @@ final class TRCBuilder {
                 "ORDER BY",
                 "A calculus expression denotes an unordered set; the sort is shown outside it."))
         }
-        if stmt.limit != nil {
+        if stmt.limit != nil || stmt.offset != nil {
             diagnostics.append(.annotated(
-                "LIMIT / FETCH FIRST",
-                "Row limits have no expression in the calculus; shown outside the braces."))
+                "LIMIT / OFFSET / FETCH FIRST",
+                "Row limits pick a window out of an ordered result, and a calculus expression " +
+                "denotes an unordered set; shown outside the braces."))
         }
     }
 

@@ -24,13 +24,17 @@ struct RATranslator {
         }
         return RATranslation(steps: builder.steps,
                              finalExpression: node,
-                             finalName: builder.steps.last?.resultName ?? ref)
+                             finalName: builder.steps.last?.resultName ?? ref,
+                             diagnostics: builder.diagnostics.deduplicated)
     }
 }
 
 /// Accumulates named derivation steps while walking the query.
 final class RABuilder {
     private(set) var steps: [RAStep] = []
+    /// What the algebra could not express exactly. The calculus side has had
+    /// this since P1; without it an approximation on this side was invisible.
+    private(set) var diagnostics: [CalcDiagnostic] = []
     private var counter = 0
 
     // MARK: Step emission
@@ -66,6 +70,13 @@ final class RABuilder {
             return buildSetOperation(op, left: left, right: right, all: all)
         case let .with(ctes, body):
             for cte in ctes {
+                if cte.isRecursive {
+                    diagnostics.append(.annotated(
+                        "WITH RECURSIVE \(cte.name)",
+                        "A recursive CTE is a least fixed point, which the relational algebra " +
+                        "cannot express — transitive closure is the standard example. Only the " +
+                        "non-recursive reading is shown below."))
+                }
                 let (node, ref) = build(cte.query)
                 let named = RANode.rename(alias: cte.name, child: node)
                 emit(name: cte.name, title: "Common table expression (\(RASymbol.rename))",
@@ -181,12 +192,23 @@ final class RABuilder {
 
         // 7. ORDER BY
         if !stmt.orderBy.isEmpty {
-            let keys = stmt.orderBy.map { "\($0.expression.rendered) \($0.descending ? "↓" : "↑")" }
+            let keys = stmt.orderBy.map(\.rendered)
             node = .sort(keys: keys, child: node)
             ref = emit(title: "Sort (\(RASymbol.sort))", clause: "ORDER BY",
                        explanation: "Order the result by \(keys.joined(separator: ", ")). " +
                         "(Sorting is an extension to the classical relational algebra.)",
                        node: node, rhs: "\(RASymbol.sort)[\(keys.joined(separator: ", "))] ( \(ref) )")
+        }
+
+        // 8. LIMIT / OFFSET / FETCH FIRST
+        if stmt.limit != nil || stmt.offset != nil {
+            node = .limit(count: stmt.limit, offset: stmt.offset, child: node)
+            let sub = RANode.limitSubscript(count: stmt.limit, offset: stmt.offset)
+            ref = emit(title: "Row limit (\(RASymbol.limit))", clause: "LIMIT",
+                       explanation: "Keep \(sub) of the ordered result. Row limiting depends on " +
+                        "an order, so like sorting it is an extension to the classical " +
+                        "set-based algebra rather than one of its operators.",
+                       node: node, rhs: "\(RASymbol.limit)[\(sub)] ( \(ref) )")
         }
 
         return (node, ref)
@@ -219,8 +241,15 @@ final class RABuilder {
                            node: node, rhs: "\(ref) \(RASymbol.cross) \(rref)")
             case .inner:
                 node = .join(condition: cond, left: node, right: rn)
-                ref = emit(title: "Join (\(RASymbol.join))", clause: "JOIN",
-                           explanation: "Inner join with \(rref)\(cond.map { " on \($0)" } ?? "").",
+                // A bare ⋈ with no subscript *is* the natural join, so the node
+                // needs nothing special — only the wording does.
+                let what = join.natural ? "Natural join" : "Inner join"
+                let over = join.natural
+                    ? " over every column they share"
+                    : (cond.map { " on \($0)" } ?? "")
+                ref = emit(title: "\(what) (\(RASymbol.join))",
+                           clause: join.natural ? "NATURAL JOIN" : "JOIN",
+                           explanation: "\(what) with \(rref)\(over).",
                            node: node, rhs: "\(ref) \(RASymbol.join)\(condSub) \(rref)")
             case .left:
                 node = .outerJoin(kind: .left, condition: cond, left: node, right: rn)

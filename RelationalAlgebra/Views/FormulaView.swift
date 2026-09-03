@@ -13,10 +13,11 @@ struct FormulaView: View {
     @EnvironmentObject private var viewModel: AppViewModel
 
     var body: some View {
-        if let expression = viewModel.translation?.finalExpression {
+        if let translation = viewModel.translation {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    PrettyFormulaCard(expression: expression)
+                    FidelityBanner(diagnostics: translation.diagnostics)
+                    PrettyFormulaCard(expression: translation.finalExpression)
                     legend
                 }
                 .padding()

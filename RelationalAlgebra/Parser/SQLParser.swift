@@ -195,7 +195,7 @@ final class SQLParser {
     /// `WITH [RECURSIVE] name [(cols)] AS ( query ) [, …] <body>`
     private func parseWith() throws -> SQLQuery {
         _ = advance() // WITH
-        _ = matchIdentifierKeyword("RECURSIVE")
+        let recursive = matchIdentifierKeyword("RECURSIVE")
         var ctes: [CommonTableExpression] = []
         repeat {
             let name = try expect(kind: .identifier, "a CTE name").text
@@ -212,7 +212,8 @@ final class SQLParser {
             _ = try expect(kind: .leftParen, "'(' before the CTE query")
             let query = try parseQuery()
             _ = try expect(kind: .rightParen, "')'")
-            ctes.append(CommonTableExpression(name: name, columns: columns, query: query))
+            ctes.append(CommonTableExpression(name: name, columns: columns, query: query,
+                                              isRecursive: recursive))
         } while consumeCommaIfPresent()
 
         let body = try parseQuery()
@@ -280,11 +281,14 @@ final class SQLParser {
         if matchKeyword("LIMIT") {
             let tok = try expect(kind: .number, "a number after LIMIT")
             stmt.limit = Int(tok.text)
-            // Optional `LIMIT offset, count` or `OFFSET n` — consume leniently.
-            if consumeCommaIfPresent(), check(kind: .number) { stmt.limit = Int(advance().text) }
+            // MySQL's `LIMIT offset, count`: the first number was the offset.
+            if consumeCommaIfPresent(), check(kind: .number) {
+                stmt.offset = stmt.limit
+                stmt.limit = Int(advance().text)
+            }
         }
         if matchIdentifierKeyword("OFFSET") {
-            if check(kind: .number) { _ = advance() }
+            if check(kind: .number) { stmt.offset = Int(advance().text) }
             _ = matchIdentifierKeyword("ROWS") || matchIdentifierKeyword("ROW")
         }
         // `FETCH FIRST n ROWS ONLY`
@@ -403,6 +407,10 @@ final class SQLParser {
         var joins: [Join] = []
         while true {
             let kind: JoinKind
+            // `NATURAL` prefixes any of the join kinds below and replaces the
+            // ON/USING clause: the condition is every column the two sides
+            // share, which is a question for the schema rather than the syntax.
+            let natural = matchIdentifierKeyword("NATURAL")
             if matchKeyword("CROSS") {
                 try expectKeyword("JOIN")
                 kind = .cross
@@ -423,6 +431,10 @@ final class SQLParser {
                 kind = .full
             } else if matchKeyword("JOIN") {
                 kind = .inner
+            } else if natural {
+                throw ParseError(message: "Expected JOIN after NATURAL but found " +
+                                          "'\(currentDescription)'.",
+                                 position: current.position)
             } else {
                 break
             }
@@ -441,7 +453,7 @@ final class SQLParser {
                 }
                 _ = try expect(kind: .rightParen, "')'")
             }
-            joins.append(Join(kind: kind, table: table, on: on, using: using))
+            joins.append(Join(kind: kind, table: table, on: on, using: using, natural: natural))
         }
         return joins
     }
@@ -453,11 +465,13 @@ final class SQLParser {
             var descending = false
             if matchKeyword("DESC") { descending = true }
             else { _ = matchKeyword("ASC") }
-            // Optional `NULLS FIRST` / `NULLS LAST` — accepted and ignored.
+            var nullsFirst: Bool? = nil
             if matchIdentifierKeyword("NULLS") {
-                _ = matchIdentifierKeyword("FIRST") || matchIdentifierKeyword("LAST")
+                if matchIdentifierKeyword("FIRST") { nullsFirst = true }
+                else if matchIdentifierKeyword("LAST") { nullsFirst = false }
             }
-            items.append(OrderItem(expression: expr, descending: descending))
+            items.append(OrderItem(expression: expr, descending: descending,
+                                   nullsFirst: nullsFirst))
         } while consumeCommaIfPresent()
         return items
     }

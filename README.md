@@ -402,8 +402,17 @@ beautifully and means something else.
   conditions as pre-rendered strings, so evaluating it would mean writing a
   second expression parser. See
   [`docs/DESIGN-CALCULUS.md`](docs/DESIGN-CALCULUS.md).
-- `ORDER BY` (τ) and duplicate handling are the usual pragmatic extensions to
-  the pure (set-based) relational algebra.
+- `ORDER BY` (τ), row limiting (`LIMIT`) and duplicate handling are the usual
+  pragmatic extensions to the pure (set-based) relational algebra. The calculus
+  cannot express any of them at all, so there they are annotated outside the
+  braces rather than written into the formula.
+- `WITH RECURSIVE` is parsed but **not** translated: a recursive CTE is a least
+  fixed point, which is precisely what neither the algebra nor first-order
+  calculus can express — transitive closure is the textbook example. The
+  non-recursive reading is shown and every notation says so.
+- `NATURAL JOIN` equates every column the two sides share, so it depends on
+  knowing what those columns are. With `CREATE TABLE` declarations it is exact;
+  without them the shared set is inferred from the query and reported as such.
 - Only the `SELECT` surface is translated. `CREATE TABLE` is parsed, but purely
   to declare column names and order for the domain calculus — nothing is
   executed, and the rest of DDL and all of DML are out of scope.

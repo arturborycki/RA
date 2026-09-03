@@ -16,6 +16,8 @@ struct StepsView: View {
         if let translation = viewModel.translation {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
+                    FidelityBanner(diagnostics: translation.diagnostics)
+
                     ForEach(translation.steps) { step in
                         StepCard(step: step)
                     }

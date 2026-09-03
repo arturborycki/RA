@@ -283,6 +283,31 @@ final class RelationalAlgebraTests: XCTestCase {
         XCTAssertTrue(result.finalExpression.formula.contains(RASymbol.leftJoin))
     }
 
+    func testLimitBecomesAnOperatorRatherThanVanishing() throws {
+        let query = try SQLParser.parse("SELECT a FROM T ORDER BY a LIMIT 10 OFFSET 20")
+        let formula = RATranslator().translate(query).finalExpression.formula
+        XCTAssertTrue(formula.contains("LIMIT[10 offset 20]"), formula)
+    }
+
+    func testNaturalJoinIsABareJoinGlyph() throws {
+        let query = try SQLParser.parse("SELECT a FROM R NATURAL JOIN S")
+        let formula = RATranslator().translate(query).finalExpression.formula
+        // A join with no subscript is the natural join.
+        XCTAssertTrue(formula.contains("⋈"), formula)
+        XCTAssertFalse(formula.contains("⋈["), formula)
+    }
+
+    func testRecursiveCTEIsReportedInTheAlgebraToo() throws {
+        let script = try SQLParser.parseScript("""
+            WITH RECURSIVE Reports AS (SELECT id FROM Employee)
+            SELECT id FROM Reports
+            """)
+        let translation = RATranslator().translate(script.query)
+        XCTAssertTrue(translation.diagnostics.contains {
+            $0.construct.hasPrefix("WITH RECURSIVE")
+        }, translation.diagnostics.map(\.construct).description)
+    }
+
     func testTreeHasRootAndLeaves() throws {
         let query = try SQLParser.parse("SELECT name FROM Employee WHERE salary > 50000")
         let result = RATranslator().translate(query)
