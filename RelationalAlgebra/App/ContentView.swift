@@ -31,6 +31,7 @@ struct ContentView: View {
     @AppStorage("resultTab") private var selectedTab: ResultTab = .steps
     @AppStorage("phoneTab") private var phoneTab: PhoneTab = .sql
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var phoneTab: PhoneTab = .sql
 
     var body: some View {
         Group {
@@ -112,6 +113,34 @@ enum PhoneTab: String, CaseIterable, Identifiable {
         case .result: return "function"
         }
     }
+
+    // iPhone / compact width: tabs, since a split view would hide the results.
+    private var compactLayout: some View {
+        TabView(selection: $phoneTab) {
+            NavigationStack {
+                EditorView()
+                    .navigationTitle("SQL")
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+            .tabItem { Label("SQL", systemImage: "curlybraces") }
+            .tag(PhoneTab.sql)
+
+            NavigationStack {
+                ResultsView(selectedTab: $selectedTab)
+                    .navigationTitle("Relational Algebra")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            ThemePicker(theme: $appTheme)
+                        }
+                    }
+            }
+            .tabItem { Label("Result", systemImage: "function") }
+            .tag(PhoneTab.result)
+        }
+    }
+
+    private enum PhoneTab: Hashable { case sql, result }
 }
 
 /// A menu that lets the user pick System / Light / Dark appearance.
