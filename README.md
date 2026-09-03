@@ -353,6 +353,14 @@ open RelationalAlgebra.xcodeproj
 No signing is required for the simulator. For a device, set your team under
 *Signing & Capabilities* (the bundle id is `com.relationalalgebra.RelationalAlgebra`).
 
+Debug builds compile whole-module rather than incrementally. Xcode 16.4's
+batch mode intermittently reports `error: circular reference` with no source
+location while compiling the calculus files, depending only on how it happens
+to partition the module into batches that run; the same sources type-check
+cleanly whole-module every time, and CI checks that on every push. Whole-module
+Debug builds cost a little rebuild time on a project this size and remove the
+flake entirely.
+
 ## Tests
 
 `RelationalAlgebraTests` covers the lexer, parser, and both translators — token
