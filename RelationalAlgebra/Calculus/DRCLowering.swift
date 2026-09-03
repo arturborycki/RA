@@ -310,6 +310,10 @@ final class DRCLoweringEngine {
                 visit(lhs); visit(rhs)
             case let .predicate(_, terms):
                 terms.forEach(visitTerm)
+            case let .aggregateBinding(result, _, _, _, _, _):
+                // The comprehension's own variables stay inside it; only the
+                // result it binds is visible out here.
+                if seen.insert(result).inserted { ordered.append(result) }
             case .constant:
                 break
             }
