@@ -310,14 +310,14 @@ final class CalcToSQL {
     /// calculus has no aggregates, and SQL computes one per row this way, which
     /// is what the comprehension says.
     private func aggregateExpression(_ binding: CalcFormula, scope: [String: String]) throws -> Expression {
-        guard case let .aggregateBinding(_, function, distinct, element, variables, condition) = binding
+        guard case let .aggregateBinding(_, function, distinct, element, variables, body) = binding
         else { return .nullLiteral }
         let names = Set(variables.map(\.name))
         var inner = scope
         var bound: Set<String> = []
         var stmt = SelectStatement()
         var others: [CalcFormula] = []
-        for conjunct in condition.conjuncts {
+        for conjunct in body.conjuncts {
             if case let (variable, relation)? = CalcToSQL.range(conjunct), names.contains(variable),
                !bound.contains(variable) {
                 bound.insert(variable)
