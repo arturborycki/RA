@@ -425,11 +425,18 @@ final class SQLParser {
         if matchKeyword("AS") {
             return try expect(kind: .identifier, "an alias name").text
         }
-        if check(kind: .identifier) {
+        // A contextual clause word is not an alias: in `FROM R NATURAL JOIN S`
+        // taking NATURAL as R's alias would quietly turn the natural join into
+        // an inner join with no condition.
+        if check(kind: .identifier),
+           !SQLParser.clauseWords.contains(current.text.uppercased()) {
             return advance().text
         }
         return nil
     }
+
+    /// Identifiers that may follow a table reference as the start of a clause.
+    private static let clauseWords: Set<String> = ["NATURAL", "OFFSET", "FETCH"]
 
     private func parseJoins() throws -> [Join] {
         var joins: [Join] = []
