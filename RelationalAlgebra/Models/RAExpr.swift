@@ -52,9 +52,7 @@ indirect enum RAExpr: Equatable {
 extension RAExpr {
     /// Written out rather than derived, for the reason given on `CalcTerm.==`:
     /// a synthesised `==` on a recursive enum is what the Xcode 16.4 frontend
-    /// walks into a "circular reference" on, with no source location. The
-    /// non-matching cases are listed rather than defaulted so a new case is a
-    /// compile error here instead of a silently unequal pair.
+    /// walks into a "circular reference" on, with no source location.
     static func == (lhs: RAExpr, rhs: RAExpr) -> Bool {
         switch (lhs, rhs) {
         case let (.relation(a), .relation(b)):
@@ -81,9 +79,10 @@ extension RAExpr {
             return aCount == bCount && aOffset == bOffset && aChild == bChild
         case let (.division(aLeft, aRight), .division(bLeft, bRight)):
             return aLeft == bLeft && aRight == bRight
-        case (.relation, _), (.selection, _), (.projection, _), (.rename, _),
-             (.distinct, _), (.join, _), (.cross, _), (.setOperation, _),
-             (.grouping, _), (.sort, _), (.limit, _), (.division, _):
+        // A default rather than every non-matching pair: with twelve cases the
+        // exhaustive list is more than the compiler will check in reasonable
+        // time. A new case still needs its own matching line above.
+        default:
             return false
         }
     }
