@@ -130,6 +130,79 @@ final class ReverseTranslationTests: XCTestCase {
                        "SELECT DISTINCT salary * 12 AS annual\nFROM Employee;")
     }
 
+    // MARK: - Named results
+
+    func testAssignmentsInEverySpelling() throws {
+        let script = try RAParser.parseScript("""
+            R₁ = Employee
+            R₂ ← σ[salary > 1](R₁); R3 := π[name](R₂)
+            """)
+        XCTAssertEqual(script.assignments.map(\.name), ["R1", "R2", "R3"])
+        // Ending on an assignment makes that name the answer.
+        XCTAssertEqual(script.expression, .relation("R3"))
+    }
+
+    func testTwoExpressionsOnOneLineAreATypoNotTwoStatements() {
+        XCTAssertThrowsError(try RAParser.parseScript("R1 = Employee Department"))
+        XCTAssertThrowsError(try RAParser.parseScript("Employee\nDepartment"))
+    }
+
+    func testANameMustBeAssignedBeforeItIsRead() {
+        XCTAssertThrowsError(try RAToSQL.translate(
+            RAParser.parseScript("R1 = σ[a > 1](R2)\nR2 = Employee\nR1")))
+        XCTAssertThrowsError(try RAParser.parseScript("R1 = Employee\nR1 = Department"))
+    }
+
+    func testAnUnreadNameIsLeftOutAndSaysSo() throws {
+        let generated = try RAToSQL.translate(
+            RAParser.parseScript("Unused = Department\nπ[name](Employee)"))
+        XCTAssertFalse(generated.text.contains("Department"), generated.text)
+        XCTAssertTrue(generated.diagnostics.contains { $0.construct == "Unused" })
+    }
+
+    /// The point of accepting assignments: the Steps view's derivation, pasted
+    /// back, must translate.
+    func testTheForwardDerivationPastesBack() throws {
+        let titles = ["Filter + project", "Inner join"]
+        let samples = SampleQueries.all.filter { titles.contains($0.title) }
+        XCTAssertEqual(samples.count, titles.count)
+        for sample in samples {
+            let forward = RATranslator().translate(try SQLParser.parse(sample.sql))
+            let derivation = forward.steps.map(\.definition).joined(separator: "\n")
+            XCTAssertNoThrow(try RAToSQL.translate(RAParser.parseScript(derivation)),
+                             "\(sample.title):\n\(derivation)")
+        }
+    }
+
+    // MARK: - Prettify and steps
+
+    /// Prettify rewrites the buffer from the parse tree. Whatever it writes
+    /// must mean exactly what was there: the same SQL comes out.
+    func testPrettifiedAlgebraTranslatesToTheSameSQL() throws {
+        for golden in try fixture().cases {
+            let pretty = try RAParser.parseScript(golden.ra).prettyText(prelude: "")
+            XCTAssertEqual(try RAToSQL.translate(RAParser.parseScript(pretty)).text, golden.sql,
+                           "\(golden.name):\n\(pretty)")
+        }
+    }
+
+    func testPrettifyTurnsWordsIntoGlyphsAndKeepsDeclarations() throws {
+        let source = "CREATE TABLE R (a INT);\npi[a](sigma[a > 1](R))"
+        let pretty = try RAParser.parseScript(source)
+            .prettyText(prelude: RAParser.declarationPrelude(source))
+        XCTAssertTrue(pretty.hasPrefix("CREATE TABLE R (a INT);"), pretty)
+        XCTAssertTrue(pretty.contains("π[a]"), pretty)
+        XCTAssertTrue(pretty.contains("σ[a > 1]"), pretty)
+    }
+
+    func testStepsRunBottomUpAndEndOnTheWholeQuery() throws {
+        let generated = try sql("π[name, salary] ( σ[salary > 50000] ( Employee ) )")
+        XCTAssertEqual(generated.steps.map(\.title), ["Relation", "Selection σ", "Projection π"])
+        XCTAssertEqual(generated.steps.map(\.index), [1, 2, 3])
+        XCTAssertEqual(generated.steps.last?.sql, generated.text)
+        XCTAssertTrue(generated.steps[1].explanation.contains("WHERE"))
+    }
+
     // MARK: - Errors
 
     func testParseErrorsPointIntoTheSubscript() {

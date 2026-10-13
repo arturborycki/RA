@@ -41,7 +41,8 @@ enum Notation: String, CaseIterable, Identifiable {
         switch self {
         case .ra:        return ResultTab.allCases
         case .trc, .drc: return [.steps, .formula, .diagram]
-        case .sql, .compare: return []
+        case .sql:       return [.steps, .formula]
+        case .compare:   return []
         }
     }
 

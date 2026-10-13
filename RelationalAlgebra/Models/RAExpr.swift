@@ -72,17 +72,47 @@ extension RAExpr {
     }
 }
 
-/// What the RA editor holds: optional table declarations, then one expression.
+/// `R₁ = σ[…](Employee)` — a named intermediate result, as the Steps view
+/// writes a derivation.
+struct RAAssignment: Equatable {
+    var name: String
+    var expression: RAExpr
+
+    static func == (lhs: RAAssignment, rhs: RAAssignment) -> Bool {
+        lhs.name == rhs.name && lhs.expression == rhs.expression
+    }
+}
+
+/// What the RA editor holds: optional table declarations, any number of named
+/// results, then the expression the whole buffer denotes. When the buffer ends
+/// on an assignment, `expression` is just that name.
 struct RAScript: Equatable {
     var declarations: [TableDeclaration]
     var expression: RAExpr
+    var assignments: [RAAssignment] = []
 
     static func == (lhs: RAScript, rhs: RAScript) -> Bool {
         lhs.declarations == rhs.declarations && lhs.expression == rhs.expression
+            && lhs.assignments == rhs.assignments
     }
 }
 
 extension RAExpr {
+    /// Every relation name the expression reads, once per read — which is how
+    /// a named result read twice is told from one read once.
+    var relationReads: [String] {
+        switch self {
+        case let .relation(name):
+            return [name]
+        case let .selection(_, child), let .projection(_, child),
+             let .rename(_, _, child), let .distinct(child):
+            return child.relationReads
+        case let .join(_, _, left, right), let .cross(left, right),
+             let .setOperation(_, left, right):
+            return left.relationReads + right.relationReads
+        }
+    }
+
     /// Every base relation the expression reads, in first-mention order.
     var relationNames: [String] {
         var seen: [String] = []

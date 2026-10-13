@@ -59,6 +59,10 @@ struct RAToken: Equatable {
         case rightParen
         /// The raw text between `[…]` or `_{…}`, parsed later by whoever owns it.
         case subscriptText
+        /// `=`, `←` or `:=` after a name: `R₁ = σ[…](Employee)`.
+        case assign
+        /// Separates statements, though a new line beginning `name =` does too.
+        case semicolon
         case eof
     }
     var kind: Kind
@@ -68,6 +72,8 @@ struct RAToken: Equatable {
     var position: Int
     /// A double-quoted identifier — never read as an operator alias.
     var quoted: Bool = false
+    /// The first token on its line, which is where a new statement may begin.
+    var startsLine: Bool = false
 
     /// Written out rather than derived; see `RAExpr.==`.
     static func == (lhs: RAToken, rhs: RAToken) -> Bool {
@@ -82,10 +88,11 @@ extension RAToken.Kind {
         case let (.unary(a), .unary(b)):   return a == b
         case let (.binary(a), .binary(b)): return a == b
         case (.identifier, .identifier), (.leftParen, .leftParen),
-             (.rightParen, .rightParen), (.subscriptText, .subscriptText), (.eof, .eof):
+             (.rightParen, .rightParen), (.subscriptText, .subscriptText),
+             (.assign, .assign), (.semicolon, .semicolon), (.eof, .eof):
             return true
         case (.unary, _), (.binary, _), (.identifier, _), (.leftParen, _),
-             (.rightParen, _), (.subscriptText, _), (.eof, _):
+             (.rightParen, _), (.subscriptText, _), (.assign, _), (.semicolon, _), (.eof, _):
             return false
         }
     }
@@ -145,6 +152,7 @@ struct RALexer {
     private mutating func run() throws -> [RAToken] {
         var tokens: [RAToken] = []
         while true {
+            let gapStart = index
             skipWhitespaceAndComments()
             guard index < chars.count else {
                 tokens.append(RAToken(kind: .eof, text: "", position: index))
@@ -152,6 +160,12 @@ struct RALexer {
             }
             let start = index
             let c = chars[index]
+            let firstNew = tokens.count
+            defer {
+                if tokens.count > firstNew, chars[gapStart..<start].contains("\n") {
+                    tokens[firstNew].startsLine = true
+                }
+            }
 
             if let kind = RALexer.glyphs[c] {
                 index += 1
@@ -167,6 +181,15 @@ struct RALexer {
                 if takesSubscript(token.kind), let sub = try scanSubscript() { tokens.append(sub) }
             } else if c == "\"" {
                 tokens.append(try scanQuotedIdentifier())
+            } else if c == "=" || c == "←" {
+                index += 1
+                tokens.append(RAToken(kind: .assign, text: String(c), position: start))
+            } else if c == ":", peek(1) == "=" {
+                index += 2
+                tokens.append(RAToken(kind: .assign, text: ":=", position: start))
+            } else if c == ";" {
+                index += 1
+                tokens.append(RAToken(kind: .semicolon, text: ";", position: start))
             } else if c == "(" {
                 index += 1
                 tokens.append(RAToken(kind: .leftParen, text: "(", position: start))
@@ -344,26 +367,85 @@ final class RAParser {
         try parseScript(source).expression
     }
 
-    /// Lex + parse a whole RA buffer: any number of `CREATE TABLE …;`
-    /// statements, then one expression.
-    static func parseScript(_ source: String) throws -> RAScript {
+    /// The `CREATE TABLE …;` statements at the top of a buffer, verbatim, or
+    /// "" when there are none — what Prettify keeps as the user wrote it.
+    static func declarationPrelude(_ source: String) -> String {
         let chars = Array(source)
+        guard let end = try? endOfDeclarations(chars), end > 0 else { return "" }
+        return String(chars[0..<end])
+    }
+
+    /// Lex + parse a whole RA buffer: any number of `CREATE TABLE …;`
+    /// statements, any number of `name = expression` lines, then optionally
+    /// one expression. Without one, the last name assigned is the answer —
+    /// which is how the Steps view's derivation ends.
+    static func parseScript(_ source: String) throws -> RAScript {
+        let chars = RAParser.normalisingSubscriptDigits(Array(source))
         let preludeEnd = try RAParser.endOfDeclarations(chars)
         let declarations = preludeEnd > 0
             ? try SQLParser.parseDeclarations(String(chars[0..<preludeEnd]))
             : []
 
         let tokens = try RALexer(chars, start: preludeEnd).tokenize()
-        guard tokens.first?.kind != .eof else {
+        let parser = RAParser(tokens: tokens)
+        var assignments: [RAAssignment] = []
+        var result: RAExpr? = nil
+
+        while true {
+            while parser.current.kind == .semicolon { parser.advance() }
+            if parser.current.kind == .eof { break }
+            if result != nil {
+                throw ParseError(message: "Only the last line may be an expression without a " +
+                                          "name; write the earlier ones as name = expression.",
+                                 position: parser.current.position)
+            }
+            if parser.startsAssignment {
+                let name = parser.advance()
+                parser.advance() // = ← :=
+                if assignments.contains(where: { $0.name.caseInsensitiveCompare(name.text) == .orderedSame }) {
+                    throw ParseError(message: "\(name.text) is assigned twice.", position: name.position)
+                }
+                let expression = try parser.parseSetExpression()
+                assignments.append(RAAssignment(name: name.text, expression: expression))
+            } else {
+                result = try parser.parseSetExpression()
+            }
+            // A statement ends at a semicolon, the end, or a new line; anything
+            // else on the same line is a typo, not a second statement.
+            guard parser.current.kind == .semicolon || parser.current.kind == .eof
+                    || parser.current.startsLine else {
+                throw ParseError(message: "Unexpected '\(parser.current.text)' after the expression.",
+                                 position: parser.current.position)
+            }
+        }
+
+        guard let expression = result ?? assignments.last.map({ RAExpr.relation($0.name) }) else {
             throw ParseError(message: "Empty expression.", position: preludeEnd)
         }
-        let parser = RAParser(tokens: tokens)
-        let expression = try parser.parseSetExpression()
-        guard parser.current.kind == .eof else {
-            throw ParseError(message: "Unexpected '\(parser.current.text)' after the expression.",
-                             position: parser.current.position)
+        return RAScript(declarations: declarations, expression: expression,
+                        assignments: assignments)
+    }
+
+    /// `R₁` → `R1`, everywhere outside quotes, so the derivation's names are
+    /// ordinary identifiers in SQL. One character for one, so every position
+    /// an error reports still points at the right place.
+    private static func normalisingSubscriptDigits(_ chars: [Character]) -> [Character] {
+        let digits: [Character: Character] = [
+            "₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4",
+            "₅": "5", "₆": "6", "₇": "7", "₈": "8", "₉": "9"
+        ]
+        var quote: Character? = nil
+        return chars.map { c in
+            if let q = quote {
+                if c == q { quote = nil }
+                return c
+            }
+            if c == "'" || c == "\"" {
+                quote = c
+                return c
+            }
+            return digits[c] ?? c
         }
-        return RAScript(declarations: declarations, expression: expression)
     }
 
     /// The offset just past the last `CREATE TABLE …;` at the top of the
@@ -417,6 +499,11 @@ final class RAParser {
         return token
     }
 
+    /// `name =` — the start of a new statement rather than more expression.
+    private var startsAssignment: Bool {
+        current.kind == .identifier && index + 1 < tokens.count && tokens[index + 1].kind == .assign
+    }
+
     private var currentDescription: String {
         current.kind == .eof ? "end of input" : current.text
     }
@@ -455,7 +542,8 @@ final class RAParser {
                 }
             }
             // `R x S`: between two operands an `x` can only be a product.
-            if current.kind == .identifier, !current.quoted, current.text.lowercased() == "x" {
+            if current.kind == .identifier, !current.quoted, current.text.lowercased() == "x",
+               !startsAssignment {
                 advance()
                 left = .cross(left: left, right: try parseUnary())
                 continue

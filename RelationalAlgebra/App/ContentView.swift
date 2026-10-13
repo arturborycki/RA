@@ -216,7 +216,10 @@ struct ResultsView: View {
     private var resultContent: some View {
         switch activeNotation {
         case .sql:
-            SQLResultView()
+            switch activeTab {
+            case .steps: SQLStepsView()
+            default:     SQLResultView()
+            }
         case .ra:
             switch activeTab {
             case .steps:   StepsView()

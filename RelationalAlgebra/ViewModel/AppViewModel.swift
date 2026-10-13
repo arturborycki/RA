@@ -151,6 +151,14 @@ final class AppViewModel: ObservableObject {
         self.text = text
     }
 
+    /// Rewrite the algebra buffer in the app's own notation — glyphs for the
+    /// typed words, one operator per line — from the parse tree, so a buffer
+    /// that does not parse is left exactly as it is.
+    func prettifyAlgebra() {
+        guard inputLanguage == .ra, let script = try? RAParser.parseScript(raText) else { return }
+        raText = script.prettyText(prelude: RAParser.declarationPrelude(raText))
+    }
+
     /// Carry the generated SQL into the SQL editor, which is the round trip
     /// made one tap: edit it there and watch the algebra follow.
     func editGeneratedSQL() {
@@ -212,7 +220,7 @@ final class AppViewModel: ObservableObject {
     /// ordinary pipeline. The declarations travel along, so a schema typed above
     /// the algebra makes the domain calculus exact just as it does for SQL.
     nonisolated static func translate(ra script: RAScript) throws -> TranslationBundle {
-        let generated = try RAToSQL.translate(script.expression)
+        let generated = try RAToSQL.translate(script)
         var bundle = translate(SQLScript(declarations: script.declarations,
                                          query: generated.query))
         bundle.sql = generated

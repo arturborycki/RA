@@ -81,7 +81,11 @@ struct EditorView: View {
                 // only way back out of it.
                 .toolbar {
                     ToolbarItemGroup(placement: .keyboard) {
-                        Spacer()
+                        if viewModel.inputLanguage == .ra {
+                            SymbolBar()
+                        } else {
+                            Spacer()
+                        }
                         Button {
                             editorFocused = false
                         } label: {
@@ -163,6 +167,15 @@ struct EditorView: View {
     /// The same buttons whether they sit in the bar or in the overflow menu.
     @ViewBuilder
     private var editorActions: some View {
+        if viewModel.inputLanguage == .ra {
+            Button {
+                viewModel.prettifyAlgebra()
+            } label: {
+                Label("Prettify", systemImage: "wand.and.stars")
+            }
+            .disabled(viewModel.errorMessage != nil || viewModel.isEmpty)
+        }
+
         Button {
             showSchema = true
         } label: {
@@ -232,5 +245,38 @@ struct EditorView: View {
 #Preview {
     NavigationStack {
         EditorView().environmentObject(AppViewModel())
+    }
+}
+
+/// Glyph keys above the keyboard for typing relational algebra. Every glyph
+/// also has a typed word (`sigma`, `join`, …), so the bar is a shortcut, not a
+/// requirement.
+///
+/// A key inserts at the cursor by sending `insertText(_:)` down the responder
+/// chain to whatever text view is being edited — SwiftUI's `TextEditor` does
+/// not expose its selection on iOS 17, but its text view still answers that.
+struct SymbolBar: View {
+    static let symbols: [String] = [
+        "σ", "π", "ρ", "⋈", "×", "∪", "∩", "−", "δ", "⟕", "⟖", "⟗",
+        "[", "]", "→", "∧", "∨", "¬", "≠", "≤", "≥", "←"
+    ]
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(Self.symbols, id: \.self) { symbol in
+                    Button {
+                        UIApplication.shared.sendAction(#selector(UIKeyInput.insertText(_:)),
+                                                        to: nil, from: symbol, for: nil)
+                    } label: {
+                        Text(symbol)
+                            .font(.system(.title3, design: .serif))
+                            .frame(minWidth: 30)
+                    }
+                    .accessibilityLabel("Insert \(symbol)")
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 }

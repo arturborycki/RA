@@ -404,6 +404,41 @@
           10
         ]
       ]
+    },
+    {
+      "name": "derivation-read-once-is-inlined",
+      "ra": "R₁ = σ[salary > 50000](Employee)\nR₂ = π[R₁.name, location](R₁ ⋈[dept_id = Department.id] Department)",
+      "sql": "SELECT DISTINCT Employee.name, location\nFROM Employee\nJOIN Department ON dept_id = Department.id\nWHERE salary > 50000;",
+      "answer": [
+        [
+          "ana",
+          "Berlin"
+        ],
+        [
+          "cy",
+          "Paris"
+        ]
+      ]
+    },
+    {
+      "name": "name-read-twice-becomes-cte",
+      "ra": "E := π[sid, cid](Enrolled);\nπ[A.sid](σ[A.sid = B.sid ∧ A.cid < B.cid](ρ[A](E) × ρ[B](E)))",
+      "sql": "WITH E AS (\n  SELECT DISTINCT sid, cid\n  FROM Enrolled\n)\nSELECT DISTINCT A.sid\nFROM E AS A, E AS B\nWHERE A.sid = B.sid\n  AND A.cid < B.cid;",
+      "answer": [
+        [
+          1
+        ]
+      ]
+    },
+    {
+      "name": "derived-table-keeps-the-name",
+      "ra": "S ← π[sid](Student) − π[sid](Enrolled)\nπ[name](σ[Student.sid = S.sid](Student × S))",
+      "sql": "SELECT DISTINCT name\nFROM Student, (\n  SELECT DISTINCT sid\n  FROM Student\n  EXCEPT\n  SELECT DISTINCT sid\n  FROM Enrolled\n) AS S\nWHERE Student.sid = S.sid;",
+      "answer": [
+        [
+          "cy"
+        ]
+      ]
     }
   ]
 }
