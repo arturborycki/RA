@@ -164,7 +164,7 @@ struct Lexer {
     /// `→` reads as `AS` because that is what it means in a projection list:
     /// `π[salary * 12 → annual]` is `SELECT salary * 12 AS annual`.
     private static let glyphKeywords: [Character: String] = [
-        "∧": "AND", "∨": "OR", "¬": "NOT", "→": "AS"
+        "∧": "AND", "∨": "OR", "¬": "NOT", "→": "AS", "↑": "ASC", "↓": "DESC"
     ]
 
     private mutating func scanOperator() throws -> Token {

@@ -29,6 +29,7 @@ enum RASymbol {
     static let union          = "∪"
     static let intersect      = "∩"
     static let difference     = "−"
+    static let division       = "÷"   // only ever typed: SQL has no division
 }
 
 /// A node in the relational-algebra expression tree.
@@ -59,6 +60,9 @@ indirect enum RANode: Equatable {
     case union(left: RANode, right: RANode)
     case intersect(left: RANode, right: RANode)
     case difference(left: RANode, right: RANode)
+    /// ÷ — never produced from SQL, which has no division, but typed algebra
+    /// uses it and is rendered through this tree.
+    case division(left: RANode, right: RANode)
 
     enum OuterKind: Equatable { case left, right, full }
 }
@@ -145,6 +149,8 @@ extension RANode {
             return binary(RASymbol.intersect, lhs, rhs)
         case let .difference(lhs, rhs):
             return binary(RASymbol.difference, lhs, rhs)
+        case let .division(lhs, rhs):
+            return binary(RASymbol.division, lhs, rhs)
         }
     }
 
@@ -212,6 +218,9 @@ extension RANode {
 
         case let .difference(left, right):
             return "( \(left.formula) \(RASymbol.difference) \(right.formula) )"
+
+        case let .division(left, right):
+            return "( \(left.formula) \(RASymbol.division) \(right.formula) )"
         }
     }
 }
@@ -280,6 +289,8 @@ extension RANode {
             return "( \(left.latex) \\cap \(right.latex) )"
         case let .difference(left, right):
             return "( \(left.latex) \\setminus \(right.latex) )"
+        case let .division(left, right):
+            return "( \(left.latex) \\div \(right.latex) )"
         }
     }
 
@@ -382,6 +393,9 @@ extension RANode {
 
         case let .difference(left, right):
             return DiagramNode(symbol: RASymbol.difference, detail: nil, isLeaf: false, children: [left.tree, right.tree])
+
+        case let .division(left, right):
+            return DiagramNode(symbol: RASymbol.division, detail: nil, isLeaf: false, children: [left.tree, right.tree])
         }
     }
 }

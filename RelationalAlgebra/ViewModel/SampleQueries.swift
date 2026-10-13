@@ -242,6 +242,24 @@ enum SampleQueries {
                 schema: companySchema,
                 sql: "π[Employee.name, location] ( Employee ⟕[dept_id = Department.id] Department )",
                 language: .ra),
+
+            SampleQuery(
+                title: "Division: enrolled in every course",
+                schema: universitySchema,
+                sql: "π[name] ( Student ⋈ ( Enrolled ÷ π[cid](Course) ) )",
+                language: .ra),
+
+            SampleQuery(
+                title: "Grouping γ",
+                schema: companySchema,
+                sql: "σ[n > 1] ( γ[dept_id; COUNT(*) → n, AVG(salary) → pay] ( Employee ) )",
+                language: .ra),
+
+            SampleQuery(
+                title: "Sort τ and LIMIT",
+                schema: companySchema,
+                sql: "LIMIT[2] ( τ[salary ↓] ( π[name, salary] ( Employee ) ) )",
+                language: .ra),
         ])
 
     // MARK: - Basics

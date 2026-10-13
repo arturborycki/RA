@@ -251,7 +251,8 @@ final class AppViewModel: ObservableObject {
             case .sql:
                 result = AppViewModel.translate(try SQLParser.parseScript(text))
             case .ra:
-                result = try AppViewModel.translate(ra: try RAParser.parseScript(text))
+                result = try AppViewModel.translate(ra: try RAParser.parseScript(text),
+                                                    dialect: sqlDialect)
             case .trc, .drc:
                 let script = try CalcParser.parseScript(text, preferring: inputLanguage.calculus ?? .trc)
                 result = try AppViewModel.translate(calculus: script, dialect: sqlDialect)
@@ -276,8 +277,9 @@ final class AppViewModel: ObservableObject {
     /// Relational algebra in: translate it to SQL, then run that SQL through the
     /// ordinary pipeline. The declarations travel along, so a schema typed above
     /// the algebra makes the domain calculus exact just as it does for SQL.
-    nonisolated static func translate(ra script: RAScript) throws -> TranslationBundle {
-        let generated = try RAToSQL.translate(script)
+    nonisolated static func translate(ra script: RAScript,
+                                      dialect: SQLDialect = .duckdb) throws -> TranslationBundle {
+        let generated = try RAToSQL.translate(script, dialect: dialect)
         var bundle = translate(SQLScript(declarations: script.declarations,
                                          query: generated.query))
         bundle.sql = generated

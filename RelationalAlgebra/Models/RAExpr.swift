@@ -39,6 +39,14 @@ indirect enum RAExpr: Equatable {
     case cross(left: RAExpr, right: RAExpr)
     /// ∪, ∩, −
     case setOperation(SetOperator, left: RAExpr, right: RAExpr)
+    /// γ[keys; aggregates](child)
+    case grouping(keys: [Expression], aggregates: [SelectItem], child: RAExpr)
+    /// τ[keys](child)
+    case sort(keys: [OrderItem], child: RAExpr)
+    /// LIMIT[count offset n](child)
+    case limit(count: Int?, offset: Int?, child: RAExpr)
+    /// R ÷ S: the R-only attributes of the rows of R that pair with every row of S.
+    case division(left: RAExpr, right: RAExpr)
 }
 
 extension RAExpr {
@@ -65,8 +73,17 @@ extension RAExpr {
             return aLeft == bLeft && aRight == bRight
         case let (.setOperation(aOp, aLeft, aRight), .setOperation(bOp, bLeft, bRight)):
             return aOp == bOp && aLeft == bLeft && aRight == bRight
+        case let (.grouping(aKeys, aAggs, aChild), .grouping(bKeys, bAggs, bChild)):
+            return aKeys == bKeys && aAggs == bAggs && aChild == bChild
+        case let (.sort(aKeys, aChild), .sort(bKeys, bChild)):
+            return aKeys == bKeys && aChild == bChild
+        case let (.limit(aCount, aOffset, aChild), .limit(bCount, bOffset, bChild)):
+            return aCount == bCount && aOffset == bOffset && aChild == bChild
+        case let (.division(aLeft, aRight), .division(bLeft, bRight)):
+            return aLeft == bLeft && aRight == bRight
         case (.relation, _), (.selection, _), (.projection, _), (.rename, _),
-             (.distinct, _), (.join, _), (.cross, _), (.setOperation, _):
+             (.distinct, _), (.join, _), (.cross, _), (.setOperation, _),
+             (.grouping, _), (.sort, _), (.limit, _), (.division, _):
             return false
         }
     }
@@ -105,10 +122,11 @@ extension RAExpr {
         case let .relation(name):
             return [name]
         case let .selection(_, child), let .projection(_, child),
-             let .rename(_, _, child), let .distinct(child):
+             let .rename(_, _, child), let .distinct(child),
+             let .grouping(_, _, child), let .sort(_, child), let .limit(_, _, child):
             return child.relationReads
         case let .join(_, _, left, right), let .cross(left, right),
-             let .setOperation(_, left, right):
+             let .setOperation(_, left, right), let .division(left, right):
             return left.relationReads + right.relationReads
         }
     }
@@ -123,10 +141,11 @@ extension RAExpr {
                     seen.append(name)
                 }
             case let .selection(_, child), let .projection(_, child),
-                 let .rename(_, _, child), let .distinct(child):
+                 let .rename(_, _, child), let .distinct(child),
+                 let .grouping(_, _, child), let .sort(_, child), let .limit(_, _, child):
                 visit(child)
             case let .join(_, _, left, right), let .cross(left, right),
-                 let .setOperation(_, left, right):
+                 let .setOperation(_, left, right), let .division(left, right):
                 visit(left)
                 visit(right)
             }

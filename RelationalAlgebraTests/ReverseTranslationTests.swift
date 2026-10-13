@@ -23,6 +23,8 @@ final class ReverseTranslationTests: XCTestCase {
             let name: String
             let ra: String
             let sql: String
+            /// Present where the DataFusion setting writes something else.
+            let sql_datafusion: String?
         }
         let cases: [Case]
     }
@@ -50,6 +52,8 @@ final class ReverseTranslationTests: XCTestCase {
         XCTAssertFalse(cases.isEmpty)
         for golden in cases {
             XCTAssertEqual(try sql(golden.ra).text, golden.sql, golden.name)
+            XCTAssertEqual(try RAToSQL.translate(RAParser.parseScript(golden.ra), dialect: .datafusion).text,
+                           golden.sql_datafusion ?? golden.sql, "\(golden.name) (DataFusion)")
         }
     }
 
@@ -57,8 +61,9 @@ final class ReverseTranslationTests: XCTestCase {
     /// query that prints identically — otherwise "Edit as SQL" would break it.
     func testGeneratedSQLParsesBackToItself() throws {
         for golden in try fixture().cases {
-            let reparsed = try SQLParser.parse(golden.sql)
-            XCTAssertEqual(SQLPrinter().print(reparsed), golden.sql, golden.name)
+            for sql in [golden.sql, golden.sql_datafusion].compactMap({ $0 }) {
+                XCTAssertEqual(SQLPrinter().print(try SQLParser.parse(sql)), sql, golden.name)
+            }
         }
     }
 
@@ -220,9 +225,25 @@ final class ReverseTranslationTests: XCTestCase {
         }
     }
 
-    func testUnsupportedOperatorsAreRefusedNotGuessed() {
-        XCTAssertThrowsError(try RAParser.parse("R ÷ S"))
-        XCTAssertThrowsError(try RAParser.parse("γ[a; COUNT(*)](R)"))
+    /// ÷ says which attributes to keep only through the schema, so without
+    /// declarations it is refused rather than guessed.
+    func testDivisionNeedsDeclaredColumns() throws {
+        XCTAssertThrowsError(try sql("R ÷ S")) { error in
+            XCTAssertTrue(error is TranslationError)
+        }
+        XCTAssertNoThrow(try sql("CREATE TABLE R (a INT, b INT);\nCREATE TABLE S (b INT);\nR ÷ S"))
+        XCTAssertThrowsError(try sql("CREATE TABLE R (a INT);\nCREATE TABLE S (b INT);\nR ÷ S"))
+    }
+
+    func testGroupingWithoutASemicolonSortsKeysFromAggregates() throws {
+        XCTAssertEqual(try RAParser.parse("γ[COUNT(*) → n, dept_id](Employee)"),
+                       try RAParser.parse("γ[dept_id; COUNT(*) → n](Employee)"))
+    }
+
+    func testTheAppsOwnSortAndLimitReadBack() throws {
+        // The forms the Formula view prints for ORDER BY and LIMIT.
+        XCTAssertNoThrow(try sql("LIMIT[10 offset 20] ( τ[salary ↓, name ↑] ( Employee ) )"))
+        XCTAssertEqual(try sql("LIMIT[offset 5](Employee)").text, "SELECT *\nFROM Employee\nOFFSET 5;")
     }
 
     func testSelfJoinWithoutRenameIsRefused() {

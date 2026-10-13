@@ -72,6 +72,14 @@ final class SQLParser {
         return items
     }
 
+    /// A comma-separated `ORDER BY` list on its own, such as the subscript of `τ[…]`.
+    static func parseStandaloneOrderList(_ source: String) throws -> [OrderItem] {
+        let parser = SQLParser(tokens: try Lexer(source).tokenize())
+        let items = try parser.parseOrderList()
+        try parser.expectEnd()
+        return items
+    }
+
     // MARK: - CREATE TABLE
 
     private func parseTableDeclarations() throws -> [TableDeclaration] {

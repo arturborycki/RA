@@ -67,6 +67,29 @@ extension RAExpr {
             case .intersect: return .intersect(left: left.node, right: right.node)
             case .except:    return .difference(left: left.node, right: right.node)
             }
+
+        case let .grouping(keys, aggregates, child):
+            let aggregateLabels = aggregates.map { item -> String in
+                if case let .expression(expression, alias) = item {
+                    return printer.expression(expression) + (alias.map { " → " + $0 } ?? "")
+                }
+                return "*"
+            }
+            return .group(grouping: keys.map { printer.expression($0) }, aggregates: aggregateLabels,
+                          child: child.node)
+
+        case let .sort(keys, child):
+            return .sort(keys: keys.map { key in
+                var text = printer.expression(key.expression) + (key.descending ? " ↓" : " ↑")
+                if let nullsFirst = key.nullsFirst { text += nullsFirst ? " nulls first" : " nulls last" }
+                return text
+            }, child: child.node)
+
+        case let .limit(count, offset, child):
+            return .limit(count: count, offset: offset, child: child.node)
+
+        case let .division(left, right):
+            return .division(left: left.node, right: right.node)
         }
     }
 }

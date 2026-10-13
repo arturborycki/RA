@@ -35,12 +35,12 @@ import Foundation
 
 final class RAToSQL {
 
-    static func translate(_ expression: RAExpr) throws -> SQLGeneration {
-        try translate(RAScript(declarations: [], expression: expression))
+    static func translate(_ expression: RAExpr, dialect: SQLDialect = .duckdb) throws -> SQLGeneration {
+        try translate(RAScript(declarations: [], expression: expression), dialect: dialect)
     }
 
-    static func translate(_ script: RAScript) throws -> SQLGeneration {
-        let translator = try RAToSQL(script)
+    static func translate(_ script: RAScript, dialect: SQLDialect = .duckdb) throws -> SQLGeneration {
+        let translator = try RAToSQL(script, dialect: dialect)
         var query = translator.query(try translator.lower(translator.body))
         if !translator.ctes.isEmpty {
             query = .with(ctes: translator.ctes, body: query)
@@ -76,8 +76,15 @@ final class RAToSQL {
     private var inlinedScopes: [String: [String]] = [:]
     /// How the operator just lowered was turned into SQL, for its step card.
     private var explanation = ""
+    private let dialect: SQLDialect
+    /// Declared columns, by lower-cased relation name.
+    private var declaredColumns: [String: [String]] = [:]
 
-    private init(_ script: RAScript) throws {
+    private init(_ script: RAScript, dialect: SQLDialect) throws {
+        self.dialect = dialect
+        for declaration in script.declarations {
+            declaredColumns[declaration.name.lowercased()] = declaration.columns
+        }
         var names: [String] = []
         func add(_ more: [String]) {
             for name in more where !names.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
@@ -135,10 +142,11 @@ final class RAToSQL {
         case let .rename(name, _, child):
             takenNames.insert(name.lowercased())
             collectRenames(child)
-        case let .selection(_, child), let .projection(_, child), let .distinct(child):
+        case let .selection(_, child), let .projection(_, child), let .distinct(child),
+             let .grouping(_, _, child), let .sort(_, child), let .limit(_, _, child):
             collectRenames(child)
         case let .join(_, _, left, right), let .cross(left, right),
-             let .setOperation(_, left, right):
+             let .setOperation(_, left, right), let .division(left, right):
             collectRenames(left)
             collectRenames(right)
         }
@@ -209,6 +217,12 @@ final class RAToSQL {
         case let .open(block):
             return block
         case let .closed(query):
+            if case let .select(stmt) = query, !stmt.orderBy.isEmpty, stmt.limit == nil,
+               stmt.offset == nil {
+                note(.info("τ below another operator",
+                           "SQL does not keep the order of a sub-query, so a sort only matters " +
+                           "at the very top of the expression, or under a LIMIT."))
+            }
             let alias = freshAlias()
             return Block(from: [.derived(query, alias: alias)], scope: [alias])
         }
@@ -291,6 +305,43 @@ final class RAToSQL {
             case .full:  sqlKind = .full
             }
             return .open(try combine(left, right, kind: sqlKind, condition: condition))
+
+        case let .grouping(keys, aggregates, child):
+            let block = extendable(try lower(child))
+            var stmt = block.statement
+            let groupKeys = keys.map { requalify($0, scope: block.scope) }
+            stmt.groupBy = groupKeys
+            stmt.projections = groupKeys.map { SelectItem.expression($0, alias: nil) }
+                + aggregates.map { requalify($0, scope: block.scope) }
+            explanation = keys.isEmpty
+                ? "γ with no grouping attributes aggregates the whole relation into one row."
+                : "γ groups by its attributes and computes the aggregates per group: the keys " +
+                  "become GROUP BY and, with the aggregates, the SELECT list."
+            return .closed(.select(stmt))
+
+        case let .sort(keys, child):
+            let inner = try lower(child)
+            explanation = "τ becomes ORDER BY. It belongs at the top: a sort under another " +
+                          "operator does not survive into the result."
+            return .closed(.select(try ordering(inner) { stmt, scope in
+                stmt.orderBy = keys.map { key in
+                    var item = key
+                    if let scope { item.expression = self.requalify(key.expression, scope: scope) }
+                    return item
+                }
+            }))
+
+        case let .limit(count, offset, child):
+            let inner = try lower(child)
+            explanation = "LIMIT keeps the first rows of the result — the first in τ's order " +
+                          "when a sort is directly below."
+            return .closed(.select(try ordering(inner, allowOrdered: true) { stmt, _ in
+                stmt.limit = count
+                stmt.offset = offset
+            }))
+
+        case let .division(left, right):
+            return try lowerDivision(left, right)
 
         case let .setOperation(op, left, right):
             let lhs = query(try lower(left))
@@ -463,6 +514,205 @@ final class RAToSQL {
         return left
     }
 
+    // MARK: - Ordering and limits
+
+    /// A SELECT to put ORDER BY or LIMIT on: the query itself when it can take
+    /// one, or a wrapper around it. `allowOrdered` lets a LIMIT sit on a query
+    /// that is already sorted, which is exactly τ under LIMIT. The closure gets
+    /// the scope a key may be qualified by, or nil when the keys name output
+    /// columns of a finished SELECT.
+    private func ordering(_ lowered: Lowered, allowOrdered: Bool = false,
+                          _ apply: (inout SelectStatement, [String]?) -> Void) throws -> SelectStatement {
+        switch lowered {
+        case let .open(block):
+            var stmt = block.statement
+            apply(&stmt, block.scope)
+            return stmt
+        case let .closed(.select(existing))
+            where existing.limit == nil && existing.offset == nil
+                && (allowOrdered || existing.orderBy.isEmpty):
+            var stmt = existing
+            apply(&stmt, nil)
+            return stmt
+        case let .closed(query):
+            var stmt = SelectStatement()
+            stmt.projections = [.star]
+            stmt.from = [.derived(query, alias: freshAlias())]
+            apply(&stmt, nil)
+            return stmt
+        }
+    }
+
+    // MARK: - Division
+
+    /// R ÷ S has no SQL operator. DuckDB gets the readable double negation —
+    /// rows of R for which no row of S lacks a partner — and DataFusion, which
+    /// cannot run a sub-query two levels deep, the textbook definition:
+    /// π_A(R) − π_A((π_A(R) × S) − R).
+    private func lowerDivision(_ left: RAExpr, _ right: RAExpr) throws -> Lowered {
+        guard let leftColumns = columns(of: left), let rightColumns = columns(of: right) else {
+            throw TranslationError(message: "÷ needs to know which attributes the two sides " +
+                                            "share. Declare the tables with CREATE TABLE above " +
+                                            "the expression.")
+        }
+        let shared = rightColumns
+        guard shared.allSatisfy({ s in leftColumns.contains { $0.caseInsensitiveCompare(s) == .orderedSame } }) else {
+            throw TranslationError(message: "In R ÷ S every attribute of S must also be an " +
+                                            "attribute of R; S has \(shared.joined(separator: ", ")) " +
+                                            "and R has \(leftColumns.joined(separator: ", ")).")
+        }
+        let kept = leftColumns.filter { l in !shared.contains { $0.caseInsensitiveCompare(l) == .orderedSame } }
+        guard !kept.isEmpty else {
+            throw TranslationError(message: "R ÷ S keeps the attributes of R that S lacks, and " +
+                                            "here there are none.")
+        }
+
+        let r = query(try lower(left))
+        let s = query(try lower(right))
+
+        func column(_ table: String?, _ name: String) -> SelectItem {
+            .expression(.column(table: table, name: name), alias: nil)
+        }
+        func equal(_ a: String, _ b: String, _ names: [String]) -> [Expression] {
+            names.map { Expression.binary(op: "=", lhs: .column(table: a, name: $0),
+                                          rhs: .column(table: b, name: $0)) }
+        }
+        func allOf(_ conditions: [Expression]) -> Expression? {
+            conditions.dropFirst().reduce(conditions.first) { acc, next in
+                acc.map { Expression.binary(op: "AND", lhs: $0, rhs: next) }
+            }
+        }
+
+        if dialect.allowsDeepCorrelation {
+            let (rRef, rAlias) = tableRef(r)
+            let (sRef, sAlias) = tableRef(s)
+            let (r2Ref, r2Alias) = tableRef(r)
+
+            var innermost = SelectStatement()
+            innermost.projections = [.star]
+            innermost.from = [r2Ref]
+            innermost.whereClause = allOf(equal(r2Alias, rAlias, kept) + equal(r2Alias, sAlias, shared))
+
+            var middle = SelectStatement()
+            middle.projections = [.star]
+            middle.from = [sRef]
+            middle.whereClause = .exists(query: .select(innermost), negated: true)
+
+            var outer = SelectStatement()
+            outer.distinct = true
+            outer.projections = kept.map { column(rAlias, $0) }
+            outer.from = [rRef]
+            outer.whereClause = .exists(query: .select(middle), negated: true)
+            explanation = "SQL has no ÷. A row of R qualifies when no row of S lacks a partner " +
+                          "for it in R: two nested NOT EXISTS."
+            return .closed(.select(outer))
+        }
+
+        // π_A(R)
+        func keptOf(_ q: SQLQuery) -> SelectStatement {
+            var stmt = SelectStatement()
+            stmt.distinct = true
+            stmt.projections = kept.map { column(nil, $0) }
+            stmt.from = [tableRef(q, named: true).0]
+            return stmt
+        }
+        let pairsLeft = freshAlias()
+        let (sRef, sAlias) = tableRef(s)
+        var pairs = SelectStatement()
+        pairs.projections = kept.map { column(pairsLeft, $0) } + shared.map { column(sAlias, $0) }
+        pairs.from = [.derived(.select(keptOf(r)), alias: pairsLeft), sRef]
+
+        var all = SelectStatement()
+        all.projections = (kept + shared).map { column(nil, $0) }
+        all.from = [tableRef(r, named: true).0]
+
+        var missing = SelectStatement()
+        missing.projections = kept.map { column(nil, $0) }
+        missing.from = [.derived(.setOperation(.except, left: .select(pairs), right: .select(all),
+                                               all: false),
+                                 alias: freshAlias())]
+
+        note(.info("÷ on \(dialect.rawValue)",
+                   "\(dialect.rawValue) cannot run the nested NOT EXISTS that reads best, so ÷ is " +
+                   "written as its definition: the R-only attributes of R, minus those that " +
+                   "miss some pairing with S."))
+        explanation = "SQL has no ÷, so it is written as its definition: π_A(R) − " +
+                      "π_A((π_A(R) × S) − R), every combination that should exist minus those " +
+                      "that do."
+        return .closed(.setOperation(.except, left: .select(keptOf(r)), right: .select(missing),
+                                     all: false))
+    }
+
+    /// A query as a FROM entry: the table itself when it is just a table,
+    /// otherwise a derived table. `named` keeps a plain table unaliased.
+    private func tableRef(_ q: SQLQuery, named: Bool = false) -> (TableRef, String) {
+        if case let .select(stmt) = q, stmt.projections == [.star], stmt.from.count == 1,
+           stmt.joins.isEmpty, stmt.whereClause == nil, !stmt.distinct, stmt.groupBy.isEmpty,
+           case let .named(table, nil) = stmt.from[0] {
+            if named { return (.named(name: table, alias: nil), table) }
+            let alias = freshAlias()
+            return (.named(name: table, alias: alias), alias)
+        }
+        let alias = freshAlias()
+        return (.derived(q, alias: alias), alias)
+    }
+
+    /// The attributes an expression's result has, in order, when they can be
+    /// known — from declarations, renames and projections.
+    private func columns(of node: RAExpr) -> [String]? {
+        switch node {
+        case let .relation(name):
+            if let definition = definitions[name.lowercased()] {
+                return columns(of: definition.expression)
+            }
+            return declaredColumns[name.lowercased()]
+        case let .selection(_, child), let .distinct(child), let .sort(_, child),
+             let .limit(_, _, child):
+            return columns(of: child)
+        case let .projection(items, child):
+            var names: [String] = []
+            for item in items {
+                switch item {
+                case .star:
+                    guard let all = columns(of: child) else { return nil }
+                    names += all
+                case .qualifiedStar:
+                    return nil
+                case let .expression(expression, alias):
+                    if let alias { names.append(alias); continue }
+                    guard case let .column(_, name) = expression else { return nil }
+                    names.append(name)
+                }
+            }
+            return names
+        case let .rename(_, renamed, child):
+            return renamed.isEmpty ? columns(of: child) : renamed
+        case let .join(_, condition, left, right):
+            guard let l = columns(of: left), let r = columns(of: right) else { return nil }
+            guard condition == nil else { return l + r }
+            return l + r.filter { name in !l.contains { $0.caseInsensitiveCompare(name) == .orderedSame } }
+        case let .cross(left, right):
+            guard let l = columns(of: left), let r = columns(of: right) else { return nil }
+            return l + r
+        case let .setOperation(_, left, _):
+            return columns(of: left)
+        case let .grouping(keys, aggregates, _):
+            var names: [String] = []
+            for key in keys {
+                guard case let .column(_, name) = key else { return nil }
+                names.append(name)
+            }
+            for item in aggregates {
+                guard case let .expression(_, alias?) = item else { return nil }
+                names.append(alias)
+            }
+            return names
+        case let .division(left, right):
+            guard let l = columns(of: left), let r = columns(of: right) else { return nil }
+            return l.filter { name in !r.contains { $0.caseInsensitiveCompare(name) == .orderedSame } }
+        }
+    }
+
     // MARK: - Step titles
 
     private static func glyph(of op: SetOperator) -> String {
@@ -494,6 +744,10 @@ final class RAToSQL {
             case .intersect: return "Intersection ∩"
             case .except:    return "Difference −"
             }
+        case .grouping:                    return "Grouping γ"
+        case .sort:                        return "Sort τ"
+        case .limit:                       return "LIMIT"
+        case .division:                    return "Division ÷"
         }
     }
 

@@ -23,7 +23,7 @@
 import Foundation
 
 enum RAUnaryOperator: Equatable {
-    case selection, projection, rename, distinct, grouping, sort
+    case selection, projection, rename, distinct, grouping, sort, limit
 }
 
 enum RABinaryOperator: Equatable {
@@ -124,7 +124,8 @@ struct RALexer {
         "pi": .unary(.projection), "project": .unary(.projection),
         "rho": .unary(.rename), "rename": .unary(.rename),
         "delta": .unary(.distinct), "distinct": .unary(.distinct),
-        "gamma": .unary(.grouping), "tau": .unary(.sort),
+        "gamma": .unary(.grouping), "group": .unary(.grouping),
+        "tau": .unary(.sort), "sort": .unary(.sort), "limit": .unary(.limit),
         "join": .binary(.join), "natjoin": .binary(.join),
         "ljoin": .binary(.leftJoin), "leftjoin": .binary(.leftJoin),
         "rjoin": .binary(.rightJoin), "rightjoin": .binary(.rightJoin),
@@ -537,8 +538,9 @@ final class RAParser {
                     continue
                 }
                 if op == .division {
-                    throw ParseError(message: "Division (÷) is not supported in RA input yet.",
-                                     position: current.position)
+                    advance()
+                    left = .division(left: left, right: try parseUnary())
+                    continue
                 }
             }
             // `R x S`: between two operands an `x` can only be a product.
@@ -578,9 +580,21 @@ final class RAParser {
             }
             return .distinct(child: try parseUnary())
 
-        case .grouping, .sort:
-            throw ParseError(message: "\(opToken.text) is not supported in RA input yet.",
-                             position: opToken.position)
+        case .grouping:
+            let sub = try requireSubscript(after: opToken,
+                                           example: "γ[dept_id; COUNT(*) → n](Employee)")
+            let (keys, aggregates) = try RAParser.parseGroupingSubscript(sub)
+            return .grouping(keys: keys, aggregates: aggregates, child: try parseUnary())
+
+        case .sort:
+            let sub = try requireSubscript(after: opToken, example: "τ[salary ↓](Employee)")
+            let keys = try within(sub) { try SQLParser.parseStandaloneOrderList($0) }
+            return .sort(keys: keys, child: try parseUnary())
+
+        case .limit:
+            let sub = try requireSubscript(after: opToken, example: "LIMIT[10 offset 20](Employee)")
+            let (count, offset) = try within(sub) { try RAParser.parseLimitSubscript($0) }
+            return .limit(count: count, offset: offset, child: try parseUnary())
         }
     }
 
@@ -630,6 +644,70 @@ final class RAParser {
         } catch let error as LexError {
             throw ParseError(message: error.message, position: sub.position + error.position)
         }
+    }
+
+    /// `dept_id; COUNT(*) → n` — keys, a semicolon, then aggregates, as the
+    /// Formula view prints γ. Without a semicolon, the items holding an
+    /// aggregate are the aggregates and the rest are keys.
+    private static func parseGroupingSubscript(_ sub: RAToken) throws -> ([Expression], [SelectItem]) {
+        func items(_ text: String, at offset: Int) throws -> [SelectItem] {
+            guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
+            do {
+                return try SQLParser.parseStandaloneSelectList(text)
+            } catch let error as ParseError {
+                throw ParseError(message: error.message, position: offset + error.position)
+            } catch let error as LexError {
+                throw ParseError(message: error.message, position: offset + error.position)
+            }
+        }
+        func keys(_ list: [SelectItem]) throws -> [Expression] {
+            try list.map { item in
+                guard case let .expression(expression, nil) = item else {
+                    throw ParseError(message: "A grouping key is an attribute, without a rename.",
+                                     position: sub.position)
+                }
+                return expression
+            }
+        }
+
+        let chars = Array(sub.text)
+        var depth = 0
+        var quote: Character? = nil
+        for (i, c) in chars.enumerated() {
+            if let q = quote { if c == q { quote = nil }; continue }
+            if c == "'" || c == "\"" { quote = c }
+            else if c == "(" { depth += 1 }
+            else if c == ")" { depth -= 1 }
+            else if c == ";", depth == 0 {
+                return (try keys(try items(String(chars[..<i]), at: sub.position)),
+                        try items(String(chars[(i + 1)...]), at: sub.position + i + 1))
+            }
+        }
+        let all = try items(sub.text, at: sub.position)
+        return (try keys(all.filter { !$0.isAggregate }), all.filter(\.isAggregate))
+    }
+
+    /// `10`, `10 offset 20`, or `offset 20`.
+    private static func parseLimitSubscript(_ text: String) throws -> (Int?, Int?) {
+        let tokens = try Lexer(text).tokenize()
+        var i = 0
+        var count: Int? = nil
+        var offset: Int? = nil
+        if tokens[i].kind == .number {
+            count = Int(tokens[i].text)
+            i += 1
+        }
+        if tokens[i].kind == .identifier, tokens[i].text.uppercased() == "OFFSET",
+           tokens[i + 1].kind == .number {
+            offset = Int(tokens[i + 1].text)
+            i += 2
+        }
+        guard tokens[i].kind == .eof, count != nil || offset != nil else {
+            throw ParseError(message: "Write the limit as a count, optionally followed by " +
+                                      "offset and a number: LIMIT[10 offset 20].",
+                             position: tokens[i].position)
+        }
+        return (count, offset)
     }
 
     /// `S` or `S(a, b, c)`.

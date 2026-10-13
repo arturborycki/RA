@@ -186,9 +186,15 @@ struct SQLPrinter {
         return text
     }
 
-    /// A sub-query inside an expression, on one line — `x IN (SELECT …)`.
+    /// A sub-query inside an expression, on one line — `x IN (SELECT …)`. A
+    /// derived table's brackets close up on their contents: `(SELECT …) AS t`.
     private func inline(_ query: SQLQuery) -> String {
-        lines(query).map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ")
+        var text = ""
+        for line in lines(query).map({ $0.trimmingCharacters(in: .whitespaces) }) {
+            if !text.isEmpty && !text.hasSuffix("(") && !line.hasPrefix(")") { text += " " }
+            text += line
+        }
+        return text
     }
 
     // MARK: - Expressions

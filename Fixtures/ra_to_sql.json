@@ -439,6 +439,63 @@
           "cy"
         ]
       ]
+    },
+    {
+      "name": "grouping",
+      "ra": "γ[dept_id; COUNT(*) → n](Employee)",
+      "sql": "SELECT dept_id, COUNT(*) AS n\nFROM Employee\nGROUP BY dept_id;",
+      "answer": [
+        [
+          1,
+          2
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          3,
+          1
+        ]
+      ]
+    },
+    {
+      "name": "selection-above-grouping",
+      "ra": "σ[n > 1](γ[dept_id; COUNT(*) → n, AVG(salary) → pay](Employee))",
+      "sql": "SELECT *\nFROM (\n  SELECT dept_id, COUNT(*) AS n, AVG(salary) AS pay\n  FROM Employee\n  GROUP BY dept_id\n) AS t1\nWHERE n > 1;",
+      "answer": [
+        [
+          1,
+          2,
+          50000.0
+        ]
+      ]
+    },
+    {
+      "name": "sort-then-limit",
+      "ra": "LIMIT[2] ( τ[salary ↓] ( π[name, salary](Employee) ) )",
+      "sql": "SELECT DISTINCT name, salary\nFROM Employee\nORDER BY salary DESC\nLIMIT 2;",
+      "answer": [
+        [
+          "cy",
+          70000
+        ],
+        [
+          "ana",
+          60000
+        ]
+      ]
+    },
+    {
+      "name": "division",
+      "ra": "Enrolled ÷ π[cid](Course)",
+      "sql": "SELECT DISTINCT t1.sid\nFROM Enrolled AS t1\nWHERE NOT EXISTS (SELECT * FROM (SELECT DISTINCT cid FROM Course) AS t2 WHERE NOT EXISTS (SELECT * FROM Enrolled AS t3 WHERE t3.sid = t1.sid AND t3.cid = t2.cid));",
+      "sql_datafusion": "SELECT DISTINCT sid\nFROM Enrolled\nEXCEPT\nSELECT sid\nFROM (\n  SELECT t1.sid, t2.cid\n  FROM (\n    SELECT DISTINCT sid\n    FROM Enrolled\n  ) AS t1, (\n    SELECT DISTINCT cid\n    FROM Course\n  ) AS t2\n  EXCEPT\n  SELECT sid, cid\n  FROM Enrolled\n) AS t3;",
+      "answer": [
+        [
+          1
+        ]
+      ]
     }
   ]
 }
