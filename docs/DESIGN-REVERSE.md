@@ -618,6 +618,13 @@ CI type-check probes in `ci.yml` gain a `ReverseTranslation` layer.
 >   construct whose output must differ (division, nested `∀`). Until then, integer division
 >   gets a diagnostic.
 > - **`ρ[S(a, b)]` is in P0.** It becomes a CTE with a column list, which both engines run.
+>
+> **P2 (calculus input) as built** added the engine setting after all. A `∀` comes out as
+> doubly nested `NOT EXISTS`, which DataFusion rejects, so the DataFusion choice re-ranges any
+> row referred to two levels out one level down, equated column by column (it needs the
+> tables declared). DuckDB keeps the direct form. P2 also reads back the form the Formula view
+> prints a UNION in — a result value equated to an attribute — by splitting the `∨` into a
+> UNION and substituting the attribute.
 
 | Phase | Content | Ships |
 |---|---|---|
