@@ -369,9 +369,57 @@ forward DRC renders for unknown arity.
 - **Round-trip invariant:** `SQLParser.parse(SQLPrinter.print(q))` must equal `q` after
   normalising parentheses. This is tested over every sample query (§11). The printer also
   makes a useful "Format SQL" button for the existing SQL editor, at no extra cost.
-- Dialect: standard SQL only. `EXCEPT`, not `MINUS`. `LIMIT/OFFSET` as the app already
-  parses it. A dialect setting (Postgres / SQLite / MySQL) is listed under open questions,
-  not in scope.
+- The output targets two engines, **DuckDB** and **Apache DataFusion** (§7.1).
+
+### 7.1 Target engines: DuckDB and DataFusion
+
+Both engines speak a Postgres-flavoured SQL and agree on almost everything this feature
+emits: double-quoted identifiers, single-quoted strings, `EXISTS` / `IN` sub-queries,
+`UNION` / `INTERSECT` / `EXCEPT`, `FULL OUTER JOIN`, `LIMIT … OFFSET …`, `||`, and
+`DATE '…'` literals. So the printer writes **one portable subset by default**. A
+`SQLDialect` value (`.duckdb`, `.datafusion`) changes the output only where the engines
+actually differ.
+
+**Portable-by-construction choices.** The printer avoids these constructs even though one
+engine accepts them:
+
+| Avoid | Emit instead | Why |
+|---|---|---|
+| `WITH S(x, y) AS (…)` (CTE column list) | `WITH S AS (SELECT a AS x, b AS y …)` | Column-list CTEs are the least uniformly supported CTE form; aliasing inside the body works everywhere |
+| `NATURAL JOIN` | `JOIN … USING (shared columns)` when the schema is declared | `USING` is supported by both; `NATURAL JOIN` is emitted only without a schema, with a diagnostic |
+| Un-aliased derived table | always `(…) AS t` | Some engines require the alias and none reject it |
+| Relying on default null ordering | explicit `NULLS FIRST/LAST` whenever the input says which | Engines differ on whether `DESC` puts nulls first |
+
+**Where the dialect setting changes output:**
+
+| Concern | DuckDB | DataFusion |
+|---|---|---|
+| Integer division in a user expression (`a / b`) | `/` is fractional; `//` is integer division | `/` on integers is integer division |
+| Nested correlation (a sub-query referring two scopes out, as division's double `NOT EXISTS` and nested `∀` do) | emitted as is | **to verify in the P0 spike.** If unsupported, emit the uncorrelated form (below) |
+| Identifier case | case-insensitive, case-preserving | unquoted identifiers are lower-cased, so mixed-case names in a declared schema are quoted |
+
+For `/`, the printer keeps the user's operator and adds an `info` diagnostic that the two
+engines disagree on integer operands. It does not silently rewrite arithmetic.
+
+**Uncorrelated fallbacks.** Division and `∀` each have a standard form that needs no
+correlated sub-query:
+
+```sql
+-- R(a, b) ÷ S(b), via set difference: π_a(R) − π_a((π_a(R) × S) − R)
+SELECT a FROM R
+EXCEPT
+SELECT a FROM (SELECT r.a, s.b FROM (SELECT DISTINCT a FROM R) r, S s
+               EXCEPT
+               SELECT a, b FROM R) AS missing;
+```
+
+The correlated `NOT EXISTS` form reads better and stays the default where the engine runs
+it. The `EXCEPT` form is used where it does not, and it is also offered as a Steps card,
+because it is the textbook RA definition of division.
+
+**Scripts, not just queries.** "Copy" can include the `CREATE TABLE` declarations above the
+query, printed with types, so the script pastes into the DuckDB CLI or `datafusion-cli`
+and runs as is.
 
 ---
 
@@ -496,6 +544,7 @@ ReverseTranslation/SQLFlattener.swift     merge pass (§5.2), each rewrite a ste
 ReverseTranslation/DRCRaising.swift       DRC → TRC (§6.4)
 ReverseTranslation/CalcToSQL.swift        TRC → SQLQuery (§6.2–6.3)
 ReverseTranslation/SQLPrinter.swift       SQLQuery → formatted text
+ReverseTranslation/SQLDialect.swift       .duckdb / .datafusion differences (§7.1)
 ReverseTranslation/ReverseStep.swift      ReverseStep, SQLGeneration
 Views/InputLanguagePicker.swift
 Views/SymbolBar.swift                     + small UITextView wrapper for cursor insertion
@@ -539,6 +588,12 @@ CI type-check probes in `ci.yml` gain a `ReverseTranslation` layer.
    unions of differently-ranged disjuncts).
 5. **Negative cases:** unsafe formulas produce no SQL, mixed TRC/DRC atoms are a parse
    error, and an undeclared division produces the warning.
+6. **Run it on the real engines.** A CI job installs the `duckdb` and `datafusion` Python
+   packages. For every golden case it loads the toy database, executes the generated SQL
+   in **both** dialects, and asserts that the answers equal the in-app evaluator's. This is
+   the only test that catches SQL that parses in the app but that an engine rejects or
+   evaluates differently. It also settles the nested-correlation question in §7.1 with
+   evidence rather than documentation.
 
 ---
 
@@ -546,7 +601,7 @@ CI type-check probes in `ci.yml` gain a `ReverseTranslation` layer.
 
 | Phase | Content | Ships |
 |---|---|---|
-| **P0** | `SQLPrinter` (+ "Format SQL" on the SQL editor), input picker, per-language buffers, `NotationLexer`, `RAParser` and `RAToSQL` for σ π ρ ⋈ × ∪ ∩ −, faithful output only, SQL result view | RA → SQL for most homework |
+| **P0** | `SQLPrinter` with DuckDB / DataFusion dialects and the CI job that runs both engines (+ "Format SQL" on the SQL editor), input picker, per-language buffers, `NotationLexer`, `RAParser` and `RAToSQL` for σ π ρ ⋈ × ∪ ∩ −, faithful output only, SQL result view | RA → SQL for most homework |
 | **P1** | Flattening pass + steps, DISTINCT reasoning, symbol bar, RA examples, assignments → CTEs | SQL that looks hand-written |
 | **P2** | `CalcParser`, TRC → SQL incl. ∀ and UNION splitting, safety gate, DRC raising, render→parse round-trip tests | Calculus → SQL |
 | **P3** | Division, γ/τ/LIMIT, aggregate-extension input, Prettify, Compare fourth panel, semantic-equivalence tests for RA | Completeness and classroom extras |
@@ -573,8 +628,8 @@ for an unsafe formula would be worse than showing none.
    (Recommendation: yes, after P1. Two RA trees is debt, but not urgent debt.)
 2. Should DISTINCT default on (set RA) or off (bag RA)? (Recommendation: on. Most courses
    teach set semantics first.)
-3. Is a SQL-dialect setting needed (SQLite for students running queries locally,
-   Postgres for courses)? (Recommendation: not until someone asks. Standard SQL runs on
-   both for this subset.)
+3. Where does the DuckDB / DataFusion choice live? (Recommendation: a single app setting,
+   default DuckDB, shown as a small badge on the SQL result view. Most output is identical
+   in both, so a per-query picker would be chrome for nothing.)
 4. Should the app eventually *run* the generated SQL against sample data? The P3 toy
    evaluator is most of a "try it" feature. (Recommendation: separate design doc.)
