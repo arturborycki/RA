@@ -156,6 +156,8 @@ final class CalcToSQL {
     }
 
     private func lower(_ query: CalcQuery) throws -> SQLQuery {
+        if let eliminated = try eliminatingValueVariables(query) { return eliminated }
+
         let free = Set(query.result.flatMap { $0.term.variables.map(\.name) })
             .union(query.formula.freeVariables.map(\.name))
         var conjuncts = query.formula.conjuncts
@@ -205,6 +207,84 @@ final class CalcToSQL {
                "Every variable ranged at the top level — R(t) — becomes a FROM entry. The other " +
                "conditions become WHERE, and the result becomes SELECT DISTINCT.")
         return sql
+    }
+
+    // MARK: - Value variables
+
+    /// `{ ⟨name⟩ | ∃a ( Author(a) ∧ a.name = name ) ∨ … }` — the general form the
+    /// app prints a UNION in. `name` is a value, not a tuple: SQL has nothing
+    /// to range it over, only the attribute it is equated to. So: a ∨ that
+    /// mentions it becomes a UNION, the ∃ around it is a projection and is
+    /// lifted, and `name` is replaced by `a.name`. Nil when there is nothing
+    /// to eliminate.
+    private func eliminatingValueVariables(_ query: CalcQuery) throws -> SQLQuery? {
+        let topRanged = Set(query.formula.conjuncts.compactMap { CalcToSQL.range($0)?.0 })
+        let values = Set(query.result.flatMap { column -> [String] in
+            if case let .variable(v) = column.term { return [v.name] }
+            return []
+        }).subtracting(topRanged)
+        guard !values.isEmpty else { return nil }
+
+        var conjuncts = query.formula.conjuncts
+        if let i = conjuncts.firstIndex(where: { conjunct in
+            guard case .or = conjunct else { return false }
+            return !values.isDisjoint(with: conjunct.freeVariables.map(\.name))
+        }), case let .or(branches) = conjuncts[i] {
+            conjuncts.remove(at: i)
+            var parts: [SQLQuery] = []
+            for branch in branches {
+                var copy = query
+                copy.formula = CalcFormula.conjunction(conjuncts + [branch])
+                parts.append(try lower(copy))
+            }
+            let union = parts.dropFirst().reduce(parts[0]) {
+                SQLQuery.setOperation(.union, left: $0, right: $1, all: false)
+            }
+            record("∨ → UNION", renderer.inline(query), printer.print(union),
+                   "Each branch of this ∨ finds the result values in a different relation, so " +
+                   "each becomes its own SELECT, and UNION combines them.")
+            return union
+        }
+
+        // An ∃ in a conjunction is a projection: lift it, so its ranges are
+        // visible here and its equalities can name the value.
+        var lifted: [CalcFormula] = []
+        for conjunct in conjuncts {
+            if case let .exists(_, body) = conjunct {
+                lifted += body.conjuncts
+            } else {
+                lifted.append(conjunct)
+            }
+        }
+
+        var copy = query
+        for value in values.sorted() {
+            guard let i = lifted.firstIndex(where: { CalcToSQL.binding($0, of: value) != nil }),
+                  let attribute = CalcToSQL.binding(lifted[i], of: value) else {
+                throw TranslationError(message: "\(value) is in the result but neither ranged " +
+                                                "over a relation nor equated to an attribute, " +
+                                                "such as t.\(value) = \(value).")
+            }
+            lifted.remove(at: i)
+            lifted = lifted.map { $0.substituting(value, with: attribute) }
+            copy.result = copy.result.map { column in
+                guard case let .variable(v) = column.term, v.name == value else { return column }
+                let keepsName: Bool
+                if case let .attribute(_, name) = attribute { keepsName = name == value } else { keepsName = false }
+                return ResultColumn(term: attribute, name: column.name ?? (keepsName ? nil : value))
+            }
+        }
+        copy.formula = CalcFormula.conjunction(lifted)
+        copy.resultStyle = .compact
+        return try lower(copy)
+    }
+
+    /// `t.a = value` or `value = t.a`: the attribute a value is equated to.
+    private static func binding(_ formula: CalcFormula, of value: String) -> CalcTerm? {
+        guard case let .comparison(lhs, "=", rhs) = formula else { return nil }
+        if case let .variable(v) = lhs, v.name == value, case .attribute = rhs { return rhs }
+        if case let .variable(v) = rhs, v.name == value, case .attribute = lhs { return lhs }
+        return nil
     }
 
     // MARK: - Conditions
@@ -475,5 +555,55 @@ extension CalcScript {
         let body = CalcRenderer().pretty(view)
         let declarations = prelude.trimmingCharacters(in: .whitespacesAndNewlines)
         return declarations.isEmpty ? body : declarations + "\n\n" + body
+    }
+}
+
+extension CalcTerm {
+    /// This term with the variable `name` replaced by `replacement`.
+    func substituting(_ name: String, with replacement: CalcTerm) -> CalcTerm {
+        switch self {
+        case let .variable(v):
+            return v.name == name ? replacement : self
+        case .attribute, .literal, .opaque:
+            return self
+        case let .application(function, args, distinct):
+            return .application(name: function,
+                                args: args.map { $0.substituting(name, with: replacement) },
+                                distinct: distinct)
+        case let .binaryOp(op, lhs, rhs):
+            return .binaryOp(op: op, lhs: lhs.substituting(name, with: replacement),
+                             rhs: rhs.substituting(name, with: replacement))
+        }
+    }
+}
+
+extension CalcFormula {
+    /// This formula with the free variable `name` replaced, stopping at any
+    /// quantifier that binds a variable of that name.
+    func substituting(_ name: String, with replacement: CalcTerm) -> CalcFormula {
+        func sub(_ formula: CalcFormula) -> CalcFormula { formula.substituting(name, with: replacement) }
+        func term(_ t: CalcTerm) -> CalcTerm { t.substituting(name, with: replacement) }
+        switch self {
+        case let .relationAtom(relation, terms, known):
+            return .relationAtom(relation: relation, terms: terms.map(term), arityKnown: known)
+        case let .comparison(lhs, op, rhs):
+            return .comparison(lhs: term(lhs), op: op, rhs: term(rhs))
+        case let .and(parts):
+            return .and(parts.map(sub))
+        case let .or(parts):
+            return .or(parts.map(sub))
+        case let .not(inner):
+            return .not(sub(inner))
+        case let .exists(vars, body):
+            return vars.contains { $0.name == name } ? self : .exists(vars, sub(body))
+        case let .forAll(vars, body):
+            return vars.contains { $0.name == name } ? self : .forAll(vars, sub(body))
+        case let .implies(lhs, rhs):
+            return .implies(sub(lhs), sub(rhs))
+        case let .predicate(rendered, terms):
+            return .predicate(rendered: rendered, terms: terms.map(term))
+        case .aggregateBinding, .constant:
+            return self
+        }
     }
 }

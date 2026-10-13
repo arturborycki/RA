@@ -84,9 +84,10 @@ struct SQLDecorrelation {
         var copies: [String: String] = [:]
         var equalities: [Expression] = []
         for subquery in SQLDecorrelation.subqueries(in: condition) {
+            // SQL names are case-insensitive: `FROM S` is read by `s.sid`.
             for alias in SQLDecorrelation.qualifiers(in: subquery)
-            where outer[alias] != nil && copies[alias] == nil {
-                let relation = outer[alias]!
+            where outer[alias.lowercased()] != nil && copies[alias.lowercased()] == nil {
+                let relation = outer[alias.lowercased()]!
                 guard let columns = columnsOf(relation) else {
                     throw TranslationError(message: "DataFusion cannot run a sub-query that refers " +
                                                     "to \(alias) two levels out. Rewriting it needs " +
@@ -94,8 +95,8 @@ struct SQLDecorrelation {
                                                     "TABLE above the formula, or choose DuckDB.")
                 }
                 let copy = names.fresh(for: relation)
-                copies[alias] = copy
-                own[copy] = relation
+                copies[alias.lowercased()] = copy
+                own[copy.lowercased()] = relation
                 stmt.from.append(.named(name: relation, alias: copy))
                 equalities += columns.map {
                     Expression.binary(op: "=", lhs: .column(table: copy, name: $0),
@@ -123,7 +124,7 @@ struct SQLDecorrelation {
     private static func aliases(of stmt: SelectStatement) -> [String: String] {
         var map: [String: String] = [:]
         for ref in stmt.from + stmt.joins.map(\.table) {
-            if case let .named(name, alias) = ref { map[alias ?? name] = name }
+            if case let .named(name, alias) = ref { map[(alias ?? name).lowercased()] = name }
         }
         return map
     }
@@ -183,7 +184,7 @@ struct SQLDecorrelation {
     private static func renaming(_ expression: Expression, _ map: [String: String],
                                  insideSubqueriesOnly: Bool) -> Expression {
         let mapped = insideSubqueriesOnly ? expression : expression.mappingColumns { table, name in
-            .column(table: table.map { map[$0] ?? $0 }, name: name)
+            .column(table: table.map { map[$0.lowercased()] ?? $0 }, name: name)
         }
         return mapSubqueriesUnchecked(mapped) { renaming($0, map) }
     }
