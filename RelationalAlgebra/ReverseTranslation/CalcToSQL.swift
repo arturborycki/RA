@@ -225,7 +225,8 @@ final class CalcToSQL {
     /// mentions it becomes a UNION, the ∃ around it is a projection and is
     /// lifted, and `name` is replaced by `a.name`. Nil when there is nothing
     /// to eliminate.
-    private func eliminatingValueVariables(_ query: CalcQuery) throws -> SQLQuery? {
+    private func eliminatingValueVariables(_ typed: CalcQuery) throws -> SQLQuery? {
+        let query = renamingAggregateVariables(typed)
         let topRanged = Set(query.formula.conjuncts.compactMap { CalcToSQL.range($0)?.0 })
         let aggregated = query.formula.conjuncts.compactMap { part -> String? in
             if case let .aggregateBinding(result, _, _, _, _, _) = part { return result.name }
@@ -310,15 +311,33 @@ final class CalcToSQL {
     /// calculus has no aggregates, and SQL computes one per row this way, which
     /// is what the comprehension says.
     private func aggregateExpression(_ binding: CalcFormula, scope: [String: String]) throws -> Expression {
-        guard case let .aggregateBinding(_, function, distinct, element, variables, body) = binding
+        guard case let .aggregateBinding(_, function, distinct, typedElement, variables,
+                                         typedBody) = binding
         else { return .nullLiteral }
-        let names = Set(variables.map(\.name))
+
+        // A comprehension variable named like a row already in scope would be
+        // shadowed by it in SQL, and `e.dept_id = e.dept_id` would compare a
+        // row with itself — so such a variable gets a name of its own here.
+        var body = typedBody
+        var element = typedElement
+        var renamed: [CalcVar] = []
+        for variable in variables {
+            guard scope.keys.contains(where: { $0.caseInsensitiveCompare(variable.name) == .orderedSame })
+            else { renamed.append(variable); continue }
+            let relation = body.conjuncts.compactMap { CalcToSQL.range($0) }
+                .first { $0.0 == variable.name }?.1 ?? "t"
+            let fresh = CalcVar(name: names.fresh(for: relation), relation: variable.relation)
+            body = body.renaming(variable.name, to: fresh)
+            element = element?.renaming(variable.name, to: fresh)
+            renamed.append(fresh)
+        }
+        let own = Set(renamed.map(\.name))
         var inner = scope
         var bound: Set<String> = []
         var stmt = SelectStatement()
         var others: [CalcFormula] = []
         for conjunct in body.conjuncts {
-            if case let (variable, relation)? = CalcToSQL.range(conjunct), names.contains(variable),
+            if case let (variable, relation)? = CalcToSQL.range(conjunct), own.contains(variable),
                !bound.contains(variable) {
                 bound.insert(variable)
                 inner[variable] = relation
@@ -327,7 +346,7 @@ final class CalcToSQL {
                 others.append(conjunct)
             }
         }
-        if let unranged = names.subtracting(bound).sorted().first {
+        if let unranged = own.subtracting(bound).sorted().first {
             throw TranslationError(message: "\(unranged) is collected by \(function){ … } but no " +
                                             "relation atom in it ranges \(unranged).")
         }
@@ -419,6 +438,38 @@ final class CalcToSQL {
         case let .with(_, body):
             return outputNames(body)
         }
+    }
+
+    /// `∃e ( Employee(e) ∧ … ) ∧ h = COUNT{ e | Employee(e) ∧ … }` uses `e` for
+    /// two different rows. Substituting an outer value into the comprehension
+    /// would then be captured by its own `e`, so a comprehension variable that
+    /// shares a name with anything outside it is renamed first.
+    private func renamingAggregateVariables(_ query: CalcQuery) -> CalcQuery {
+        var outside = Set(query.result.flatMap { $0.term.variables.map(\.name) })
+        for part in query.formula.conjuncts {
+            if case .aggregateBinding = part { continue }
+            outside.formUnion(part.variables.map(\.name))
+        }
+        var copy = query
+        copy.formula = CalcFormula.conjunction(query.formula.conjuncts.map { part in
+            guard case let .aggregateBinding(result, function, distinct, element, variables, condition) = part
+            else { return part }
+            var body = condition
+            var collected = element
+            var own: [CalcVar] = []
+            for variable in variables {
+                guard outside.contains(variable.name) else { own.append(variable); continue }
+                let relation = body.conjuncts.compactMap { CalcToSQL.range($0) }
+                    .first { $0.0 == variable.name }?.1 ?? "t"
+                let fresh = CalcVar(name: names.fresh(for: relation), relation: variable.relation)
+                body = body.renaming(variable.name, to: fresh)
+                collected = collected?.renaming(variable.name, to: fresh)
+                own.append(fresh)
+            }
+            return .aggregateBinding(result: result, function: function, distinct: distinct,
+                                     element: collected, variables: own, condition: body)
+        })
+        return copy
     }
 
     /// `t.a = value` or `value = t.a`: the attribute a value is equated to.
@@ -750,6 +801,63 @@ extension CalcFormula {
             return .predicate(rendered: rendered, terms: terms.map(term))
         case let .aggregateBinding(result, function, distinct, element, variables, condition):
             // The comprehension's own variables shadow an outer one of the same name.
+            guard !variables.contains(where: { $0.name == name }) else { return self }
+            return .aggregateBinding(result: result, function: function, distinct: distinct,
+                                     element: element.map(term), variables: variables,
+                                     condition: sub(condition))
+        case .constant:
+            return self
+        }
+    }
+}
+
+extension CalcTerm {
+    /// This term with every use of variable `name` — whole, or through an
+    /// attribute — pointed at `replacement` instead.
+    func renaming(_ name: String, to replacement: CalcVar) -> CalcTerm {
+        switch self {
+        case let .variable(v):
+            return v.name == name ? .variable(replacement) : self
+        case let .attribute(v, attribute):
+            return v.name == name ? .attribute(replacement, attribute) : self
+        case .literal, .opaque:
+            return self
+        case let .application(function, args, distinct):
+            return .application(name: function, args: args.map { $0.renaming(name, to: replacement) },
+                                distinct: distinct)
+        case let .binaryOp(op, lhs, rhs):
+            return .binaryOp(op: op, lhs: lhs.renaming(name, to: replacement),
+                             rhs: rhs.renaming(name, to: replacement))
+        }
+    }
+}
+
+extension CalcFormula {
+    /// This formula with variable `name` renamed, stopping at any quantifier
+    /// that binds a variable of that name.
+    func renaming(_ name: String, to replacement: CalcVar) -> CalcFormula {
+        func sub(_ formula: CalcFormula) -> CalcFormula { formula.renaming(name, to: replacement) }
+        func term(_ t: CalcTerm) -> CalcTerm { t.renaming(name, to: replacement) }
+        switch self {
+        case let .relationAtom(relation, terms, known):
+            return .relationAtom(relation: relation, terms: terms.map(term), arityKnown: known)
+        case let .comparison(lhs, op, rhs):
+            return .comparison(lhs: term(lhs), op: op, rhs: term(rhs))
+        case let .and(parts):
+            return .and(parts.map(sub))
+        case let .or(parts):
+            return .or(parts.map(sub))
+        case let .not(inner):
+            return .not(sub(inner))
+        case let .exists(vars, body):
+            return vars.contains { $0.name == name } ? self : .exists(vars, sub(body))
+        case let .forAll(vars, body):
+            return vars.contains { $0.name == name } ? self : .forAll(vars, sub(body))
+        case let .implies(lhs, rhs):
+            return .implies(sub(lhs), sub(rhs))
+        case let .predicate(rendered, terms):
+            return .predicate(rendered: rendered, terms: terms.map(term))
+        case let .aggregateBinding(result, function, distinct, element, variables, condition):
             guard !variables.contains(where: { $0.name == name }) else { return self }
             return .aggregateBinding(result: result, function: function, distinct: distinct,
                                      element: element.map(term), variables: variables,

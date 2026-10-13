@@ -271,6 +271,11 @@ struct CalcLexer {
             name.append(c)
             index += 1
         }
+        if name == "uparrow" || name == "downarrow" {
+            // Sort directions in a `sort by` annotation.
+            return CalcToken(kind: .identifier, text: name == "uparrow" ? "ASC" : "DESC",
+                             position: start)
+        }
         guard let kind = CalcLexer.latex[name] else {
             throw ParseError(message: "Unknown LaTeX command '\\\(name)'.", position: start)
         }
@@ -717,7 +722,9 @@ final class CalcParser {
     }
 
     /// An aggregate's own variables are the ones nothing outside it mentions —
-    /// `u` in `h = COUNT{ u | Employee(u) ∧ u.dept_id = d }`, but not `d`. The
+    /// `u` in `h = COUNT{ u | Employee(u) ∧ u.dept_id = d }`, but not `d` — and
+    /// any tuple variable an atom inside it ranges, even when the same name is
+    /// used outside: `COUNT{ e | Employee(e) ∧ … }` declares its own `e`. The
     /// printed form does not list them, so they are worked out here.
     private static func scopingAggregates(_ formula: CalcFormula, result: [ResultColumn]) -> CalcFormula {
         var outside = Set(result.flatMap { $0.term.variables.map(\.name) })
@@ -731,9 +738,15 @@ final class CalcParser {
         return CalcFormula.conjunction(formula.conjuncts.map { part in
             guard case let .aggregateBinding(name, function, distinct, element, _, condition) = part
             else { return part }
+            let ranged = Set(condition.conjuncts.compactMap { part -> String? in
+                guard case let .relationAtom(_, terms, _) = part, terms.count == 1,
+                      case let .variable(v) = terms[0] else { return nil }
+                return v.name
+            })
             var own: [CalcVar] = []
             for variable in condition.variables.union(element?.variables ?? [])
-            where !outside.contains(variable.name) && !own.contains(variable) {
+            where (!outside.contains(variable.name) || ranged.contains(variable.name))
+                && !own.contains(variable) {
                 own.append(variable)
             }
             own.sort { $0.name < $1.name }
