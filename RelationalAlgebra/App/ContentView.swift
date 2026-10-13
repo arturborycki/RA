@@ -196,7 +196,7 @@ struct ResultsView: View {
                 if let error = viewModel.errorMessage {
                     ErrorBanner(title: viewModel.inputLanguage == .sql
                                        ? "Could not parse SQL"
-                                       : "Could not read the relational algebra",
+                                       : "Could not read the \(viewModel.inputLanguage.title.lowercased())",
                                 message: error)
                         .padding(.horizontal)
                         .padding(.bottom, 8)

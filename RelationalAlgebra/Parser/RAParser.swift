@@ -451,7 +451,7 @@ final class RAParser {
     /// The offset just past the last `CREATE TABLE …;` at the top of the
     /// buffer, or 0 when there is none. Only the statement boundaries are found
     /// here; the SQL parser reads the statements themselves.
-    private static func endOfDeclarations(_ chars: [Character]) throws -> Int {
+    static func endOfDeclarations(_ chars: [Character]) throws -> Int {
         var index = 0
         var end = 0
         while true {

@@ -19,6 +19,12 @@ struct SQLResultView: View {
         if let generated = viewModel.result?.sql {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    Picker("Engine", selection: $viewModel.sqlDialect) {
+                        ForEach(SQLDialect.allCases) { dialect in
+                            Text(dialect.rawValue).tag(dialect)
+                        }
+                    }
+                    .pickerStyle(.segmented)
                     FidelityBanner(diagnostics: generated.diagnostics)
                     SQLCard(sql: generated.text) {
                         viewModel.editGeneratedSQL()
@@ -28,7 +34,7 @@ struct SQLResultView: View {
             }
         } else {
             EmptyResultView(systemImage: "text.alignleft",
-                            message: "The SQL appears here once the relational algebra parses.")
+                            message: "The SQL appears here once the input parses.")
         }
     }
 }
@@ -45,7 +51,7 @@ struct SQLCard: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Label("SQL", systemImage: "text.alignleft")
                         .font(.headline)
-                    Text("Runs as is on DuckDB and DataFusion.")
+                    Text("Copy it into DuckDB or DataFusion and run it.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

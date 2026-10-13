@@ -81,8 +81,8 @@ struct EditorView: View {
                 // only way back out of it.
                 .toolbar {
                     ToolbarItemGroup(placement: .keyboard) {
-                        if viewModel.inputLanguage == .ra {
-                            SymbolBar()
+                        if let symbols = SymbolBar.symbols(for: viewModel.inputLanguage) {
+                            SymbolBar(symbols: symbols)
                         } else {
                             Spacer()
                         }
@@ -167,9 +167,9 @@ struct EditorView: View {
     /// The same buttons whether they sit in the bar or in the overflow menu.
     @ViewBuilder
     private var editorActions: some View {
-        if viewModel.inputLanguage == .ra {
+        if viewModel.inputLanguage != .sql {
             Button {
-                viewModel.prettifyAlgebra()
+                viewModel.prettify()
             } label: {
                 Label("Prettify", systemImage: "wand.and.stars")
             }
@@ -256,15 +256,25 @@ struct EditorView: View {
 /// chain to whatever text view is being edited — SwiftUI's `TextEditor` does
 /// not expose its selection on iOS 17, but its text view still answers that.
 struct SymbolBar: View {
-    static let symbols: [String] = [
-        "σ", "π", "ρ", "⋈", "×", "∪", "∩", "−", "δ", "⟕", "⟖", "⟗",
-        "[", "]", "→", "∧", "∨", "¬", "≠", "≤", "≥", "←"
-    ]
+    let symbols: [String]
+
+    static func symbols(for language: InputLanguage) -> [String]? {
+        switch language {
+        case .sql:
+            return nil
+        case .ra:
+            return ["σ", "π", "ρ", "⋈", "×", "∪", "∩", "−", "δ", "⟕", "⟖", "⟗",
+                    "[", "]", "→", "∧", "∨", "¬", "≠", "≤", "≥", "←"]
+        case .trc, .drc:
+            return ["{", "}", "|", "∃", "∀", "∧", "∨", "¬", "→", "∈", "⟨", "⟩",
+                    "≠", "≤", "≥", "…", "∪", "∩", "−"]
+        }
+    }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
-                ForEach(Self.symbols, id: \.self) { symbol in
+                ForEach(symbols, id: \.self) { symbol in
                     Button {
                         UIApplication.shared.sendAction(#selector(UIKeyInput.insertText(_:)),
                                                         to: nil, from: symbol, for: nil)

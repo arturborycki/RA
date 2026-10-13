@@ -49,10 +49,7 @@ enum Notation: String, CaseIterable, Identifiable {
     /// The notations worth offering for what the editor holds. Showing SQL as a
     /// result of SQL input would only repeat the editor.
     static func options(for input: InputLanguage) -> [Notation] {
-        switch input {
-        case .sql: return allCases.filter { $0 != .sql }
-        case .ra:  return allCases
-        }
+        input == .sql ? allCases.filter { $0 != .sql } : allCases
     }
 
     /// What the third tab is called here.

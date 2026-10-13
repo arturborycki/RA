@@ -57,12 +57,108 @@ enum SampleQueries {
     /// The examples offered when the editor holds relational algebra.
     static let raGroups: [SampleGroup] = [raBasics]
 
+    static let trcGroups: [SampleGroup] = [trcBasics]
+    static let drcGroups: [SampleGroup] = [drcBasics]
+
     static func groups(for language: InputLanguage) -> [SampleGroup] {
         switch language {
         case .sql: return groups
         case .ra:  return raGroups
+        case .trc: return trcGroups
+        case .drc: return drcGroups
         }
     }
+
+    // MARK: - Calculus in, SQL out
+
+    static let trcBasics: SampleGroup = SampleGroup(
+        title: "Tuple calculus → SQL",
+        note: "Type a set-builder expression; read the SQL it means.",
+        queries: [
+            SampleQuery(
+                title: "Select + project",
+                schema: companySchema,
+                sql: "{ e.name, e.salary | Employee(e) ∧ e.salary > 50000 }",
+                language: .trc),
+
+            SampleQuery(
+                title: "Typed with words",
+                schema: companySchema,
+                sql: "{ e.name | e in Employee and exists d in Department " +
+                     "( d.id = e.dept_id and d.location = 'Berlin' ) }",
+                language: .trc),
+
+            SampleQuery(
+                title: "∃ becomes EXISTS",
+                schema: companySchema,
+                sql: """
+                { e.name | Employee(e) ∧
+                    ∃d ( Department(d) ∧ d.id = e.dept_id ∧ d.location = 'Berlin' ) }
+                """,
+                language: .trc),
+
+            SampleQuery(
+                title: "¬∃: never enrolled",
+                schema: universitySchema,
+                sql: "{ s.name | Student(s) ∧ ¬∃e ( Enrolled(e) ∧ e.sid = s.sid ) }",
+                language: .trc),
+
+            SampleQuery(
+                title: "∀: enrolled in every course",
+                schema: universitySchema,
+                sql: """
+                { s.name | Student(s) ∧
+                    ∀c ( Course(c) → ∃e ( Enrolled(e) ∧ e.sid = s.sid ∧ e.cid = c.cid ) ) }
+                """,
+                language: .trc),
+
+            SampleQuery(
+                title: "∨ over two relations: UNION",
+                schema: universitySchema + "\n" + companySchema,
+                sql: "{ t.name | (Employee(t) ∧ t.salary > 65000) ∨ Student(t) }",
+                language: .trc),
+
+            SampleQuery(
+                title: "Unsafe: no SQL",
+                schema: companySchema,
+                sql: "{ t | ¬Employee(t) }",
+                language: .trc),
+        ])
+
+    static let drcBasics: SampleGroup = SampleGroup(
+        title: "Domain calculus → SQL",
+        note: "Positional atoms need the tables' columns: each sample declares them.",
+        queries: [
+            SampleQuery(
+                title: "Select + project",
+                schema: companySchema,
+                sql: "{ ⟨n, s⟩ | ∃i, d ( Employee(i, n, s, d) ∧ s > 50000 ) }",
+                language: .drc),
+
+            SampleQuery(
+                title: "Join by a shared variable",
+                schema: companySchema,
+                sql: "{ ⟨n⟩ | ∃i, s, d, dn ( Employee(i, n, s, d) ∧ Department(d, dn, 'Berlin') ) }",
+                language: .drc),
+
+            SampleQuery(
+                title: "Unnamed columns: …",
+                schema: companySchema,
+                sql: "{ ⟨n⟩ | ∃i ( Employee(i, n, …) ∧ i < 3 ) }",
+                language: .drc),
+
+            SampleQuery(
+                title: "∀: enrolled in every course",
+                schema: universitySchema,
+                sql: "{ ⟨n⟩ | ∃s ( Student(s, n) ∧ ∀c, t ( Course(c, t) → Enrolled(s, c) ) ) }",
+                language: .drc),
+
+            SampleQuery(
+                title: "Typed with words",
+                schema: companySchema,
+                sql: "{ <n> | EXISTS i, s, d ( Employee(i, n, s, d) AND s > 50000 AND d = 1 ) }",
+                language: .drc),
+        ])
 
     // MARK: - Relational algebra in, SQL out
 

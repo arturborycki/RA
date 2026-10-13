@@ -32,8 +32,7 @@ struct SQLStepsView: View {
             }
         } else {
             EmptyResultView(systemImage: "list.number",
-                            message: "The translation steps appear here once the relational " +
-                                     "algebra parses.")
+                            message: "The translation steps appear here once the input parses.")
         }
     }
 }
@@ -53,14 +52,18 @@ struct ReverseStepCard: View {
                 Spacer()
             }
 
-            FormulaText(formula: step.algebra)
+            if !step.algebra.isEmpty {
+                FormulaText(formula: step.algebra)
+            }
 
             Text(step.explanation)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            FormulaText(formula: step.sql)
+            if !step.sql.isEmpty {
+                FormulaText(formula: step.sql)
+            }
         }
         .padding()
         .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))

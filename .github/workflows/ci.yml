@@ -131,9 +131,11 @@ jobs:
         if: failure()
         run: |
           echo "===== compiler errors and assertion failures ====="
-          grep -E "error:" build.log \
+          # -A: an XCTAssertEqual message spans lines, and the second value —
+          # the one that differs — is on the lines after the first.
+          grep -E -A12 "error:" build.log \
             | grep -v "^ *cd " \
-            | sed 's#/Users/runner/work/RA/RA/##' | head -60 || true
+            | sed 's#/Users/runner/work/RA/RA/##' | head -200 || true
           echo "===== last lines of the log (where a hang would stop) ====="
           tail -30 build.log | sed 's#/Users/runner/work/RA/RA/##' || true
           echo "===== end ====="

@@ -32,6 +32,8 @@ struct TranslationBundle {
 enum InputLanguage: String, CaseIterable, Identifiable {
     case sql = "SQL"
     case ra = "RA"
+    case trc = "TRC"
+    case drc = "DRC"
 
     var id: String { rawValue }
 
@@ -39,6 +41,8 @@ enum InputLanguage: String, CaseIterable, Identifiable {
         switch self {
         case .sql: return "SQL"
         case .ra:  return "Relational Algebra"
+        case .trc: return "Tuple Relational Calculus"
+        case .drc: return "Domain Relational Calculus"
         }
     }
 
@@ -47,6 +51,19 @@ enum InputLanguage: String, CaseIterable, Identifiable {
         case .sql: return "Type, paste, or import a SQL query…"
         case .ra:  return "Type relational algebra, e.g. π[name](σ[salary > 50000](Employee)) " +
                           "— or with words: pi[name](sigma[salary > 50000](Employee))"
+        case .trc: return "Type tuple calculus, e.g. { e.name | Employee(e) ∧ e.salary > 50000 } " +
+                          "— or with words: { e.name | Employee(e) and e.salary > 50000 }"
+        case .drc: return "Type domain calculus, e.g. { ⟨n⟩ | ∃i, s, d ( Employee(i, n, s, d) ∧ " +
+                          "s > 50000 ) } — declare the tables above it with CREATE TABLE"
+        }
+    }
+
+    /// The calculus this language is, for the ones that are one.
+    var calculus: CalcDialect? {
+        switch self {
+        case .trc:       return .trc
+        case .drc:       return .drc
+        case .sql, .ra:  return nil
         }
     }
 }
@@ -64,6 +81,25 @@ final class AppViewModel: ObservableObject {
         didSet { if inputLanguage == .ra { scheduleParse() } }
     }
 
+    @Published var trcText: String = SampleQueries.trcBasics.queries[0].text {
+        didSet { if inputLanguage == .trc { scheduleParse() } }
+    }
+
+    @Published var drcText: String = SampleQueries.drcBasics.queries[0].text {
+        didSet { if inputLanguage == .drc { scheduleParse() } }
+    }
+
+    /// The engine generated SQL is written for. Only matters where the two
+    /// differ — see `SQLDialect`.
+    @Published var sqlDialect: SQLDialect {
+        didSet {
+            UserDefaults.standard.set(sqlDialect.rawValue, forKey: Self.sqlDialectKey)
+            parseNow()
+        }
+    }
+
+    private static let sqlDialectKey = "sqlDialect"
+
     @Published var inputLanguage: InputLanguage {
         didSet {
             UserDefaults.standard.set(inputLanguage.rawValue, forKey: Self.inputLanguageKey)
@@ -79,12 +115,16 @@ final class AppViewModel: ObservableObject {
             switch inputLanguage {
             case .sql: return sqlText
             case .ra:  return raText
+            case .trc: return trcText
+            case .drc: return drcText
             }
         }
         set {
             switch inputLanguage {
             case .sql: sqlText = newValue
             case .ra:  raText = newValue
+            case .trc: trcText = newValue
+            case .drc: drcText = newValue
             }
         }
     }
@@ -101,6 +141,8 @@ final class AppViewModel: ObservableObject {
     init() {
         let stored = UserDefaults.standard.string(forKey: Self.inputLanguageKey)
         inputLanguage = stored.flatMap(InputLanguage.init(rawValue:)) ?? .sql
+        let dialect = UserDefaults.standard.string(forKey: Self.sqlDialectKey)
+        sqlDialect = dialect.flatMap(SQLDialect.init(rawValue:)) ?? .duckdb
         parseNow()
     }
 
@@ -143,6 +185,8 @@ final class AppViewModel: ObservableObject {
         switch sample.language {
         case .sql: sqlText = sample.text
         case .ra:  raText = sample.text
+        case .trc: trcText = sample.text
+        case .drc: drcText = sample.text
         }
         inputLanguage = sample.language
     }
@@ -154,9 +198,19 @@ final class AppViewModel: ObservableObject {
     /// Rewrite the algebra buffer in the app's own notation — glyphs for the
     /// typed words, one operator per line — from the parse tree, so a buffer
     /// that does not parse is left exactly as it is.
-    func prettifyAlgebra() {
-        guard inputLanguage == .ra, let script = try? RAParser.parseScript(raText) else { return }
-        raText = script.prettyText(prelude: RAParser.declarationPrelude(raText))
+    func prettify() {
+        let prelude = RAParser.declarationPrelude(text)
+        switch inputLanguage {
+        case .sql:
+            return
+        case .ra:
+            guard let script = try? RAParser.parseScript(raText) else { return }
+            raText = script.prettyText(prelude: prelude)
+        case .trc, .drc:
+            guard let dialect = inputLanguage.calculus,
+                  let script = try? CalcParser.parseScript(text, preferring: dialect) else { return }
+            text = script.prettyText(prelude: prelude)
+        }
     }
 
     /// Carry the generated SQL into the SQL editor, which is the round trip
@@ -198,6 +252,9 @@ final class AppViewModel: ObservableObject {
                 result = AppViewModel.translate(try SQLParser.parseScript(text))
             case .ra:
                 result = try AppViewModel.translate(ra: try RAParser.parseScript(text))
+            case .trc, .drc:
+                let script = try CalcParser.parseScript(text, preferring: inputLanguage.calculus ?? .trc)
+                result = try AppViewModel.translate(calculus: script, dialect: sqlDialect)
             }
             errorMessage = nil
             errorPosition = nil
@@ -221,6 +278,17 @@ final class AppViewModel: ObservableObject {
     /// the algebra makes the domain calculus exact just as it does for SQL.
     nonisolated static func translate(ra script: RAScript) throws -> TranslationBundle {
         let generated = try RAToSQL.translate(script)
+        var bundle = translate(SQLScript(declarations: script.declarations,
+                                         query: generated.query))
+        bundle.sql = generated
+        return bundle
+    }
+
+    /// Calculus in: the same route as the algebra — into SQL, then on through
+    /// the ordinary pipeline.
+    nonisolated static func translate(calculus script: CalcScript,
+                                      dialect: SQLDialect = .duckdb) throws -> TranslationBundle {
+        let generated = try CalcToSQL.translate(script, dialect: dialect)
         var bundle = translate(SQLScript(declarations: script.declarations,
                                          query: generated.query))
         bundle.sql = generated

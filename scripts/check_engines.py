@@ -2,7 +2,7 @@
 """Run the generated SQL on DuckDB and DataFusion and check the answers.
 
 The Swift tests prove the app prints exactly the SQL recorded in
-Fixtures/ra_to_sql.json. This script proves that SQL runs on both target
+Fixtures/ra_to_sql.json and Fixtures/calc_to_sql.json. This script proves that SQL runs on both target
 engines and answers what the algebra means. Together they cover the step the
 app cannot check by itself: whether a real database accepts what it printed.
 
@@ -17,7 +17,10 @@ import sys
 import datafusion
 import duckdb
 
-FIXTURE = pathlib.Path(__file__).resolve().parent.parent / "Fixtures" / "ra_to_sql.json"
+FIXTURES = pathlib.Path(__file__).resolve().parent.parent / "Fixtures"
+# The algebra fixture carries the database; every fixture's cases run on it.
+DATABASE_FIXTURE = FIXTURES / "ra_to_sql.json"
+CASE_FIXTURES = [FIXTURES / "ra_to_sql.json", FIXTURES / "calc_to_sql.json"]
 
 
 def literal(value):
@@ -65,17 +68,22 @@ def canonical(rows):
 
 
 def main():
-    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    database = json.loads(DATABASE_FIXTURE.read_text(encoding="utf-8"))["database"]
+    cases = []
+    for path in CASE_FIXTURES:
+        cases += json.loads(path.read_text(encoding="utf-8"))["cases"]
     engines = {
-        "duckdb": duckdb_runner(fixture["database"]),
-        "datafusion": datafusion_runner(fixture["database"]),
+        "duckdb": duckdb_runner(database),
+        "datafusion": datafusion_runner(database),
     }
     failures = 0
-    for case in fixture["cases"]:
+    for case in cases:
         expected = canonical(case["answer"])
         for engine, run in engines.items():
+            # A case may be written differently for an engine that needs it.
+            sql = case.get(f"sql_{engine}", case["sql"])
             try:
-                actual = canonical(run(case["sql"]))
+                actual = canonical(run(sql))
             except Exception as error:  # an engine rejecting the SQL is the finding
                 failures += 1
                 print(f"FAIL {case['name']} on {engine}: {str(error).splitlines()[0]}")
@@ -85,7 +93,7 @@ def main():
                 print(f"FAIL {case['name']} on {engine}: got {actual}, expected {expected}")
             else:
                 print(f"ok   {case['name']} on {engine}")
-    total = len(fixture["cases"]) * len(engines)
+    total = len(cases) * len(engines)
     print(f"{total - failures}/{total} passed")
     return 1 if failures else 0
 

@@ -1,0 +1,231 @@
+{
+  "_comment": "Relational calculus → SQL golden cases, run against the database in ra_to_sql.json (declared above every input by the tests). `sql` is the DuckDB output; `sql_datafusion`, where present, is what the DataFusion setting writes instead.",
+  "cases": [
+    {
+      "name": "trc-select-project",
+      "dialect": "trc",
+      "input": "{ e.name, e.salary | Employee(e) ∧ e.salary > 50000 }",
+      "sql": "SELECT DISTINCT e.name, e.salary\nFROM Employee AS e\nWHERE e.salary > 50000;",
+      "answer": [
+        [
+          "ana",
+          60000
+        ],
+        [
+          "cy",
+          70000
+        ],
+        [
+          "di",
+          55000
+        ]
+      ]
+    },
+    {
+      "name": "trc-exists-join",
+      "dialect": "trc",
+      "input": "{ e.name | Employee(e) ∧ ∃d ( Department(d) ∧ d.id = e.dept_id ∧ d.location = 'Berlin' ) }",
+      "sql": "SELECT DISTINCT e.name\nFROM Employee AS e\nWHERE EXISTS (SELECT * FROM Department AS d WHERE d.id = e.dept_id AND d.location = 'Berlin');",
+      "answer": [
+        [
+          "ana"
+        ],
+        [
+          "bo"
+        ]
+      ]
+    },
+    {
+      "name": "trc-range-sugar-in-words",
+      "dialect": "trc",
+      "input": "{ e.name | e in Employee and exists d in Department ( d.id = e.dept_id and d.location = 'Berlin' ) }",
+      "sql": "SELECT DISTINCT e.name\nFROM Employee AS e\nWHERE EXISTS (SELECT * FROM Department AS d WHERE d.id = e.dept_id AND d.location = 'Berlin');",
+      "answer": [
+        [
+          "ana"
+        ],
+        [
+          "bo"
+        ]
+      ]
+    },
+    {
+      "name": "trc-not-exists",
+      "dialect": "trc",
+      "input": "{ s.name | Student(s) ∧ ¬∃e ( Enrolled(e) ∧ e.sid = s.sid ) }",
+      "sql": "SELECT DISTINCT s.name\nFROM Student AS s\nWHERE NOT EXISTS (SELECT * FROM Enrolled AS e WHERE e.sid = s.sid);",
+      "answer": [
+        [
+          "cy"
+        ]
+      ]
+    },
+    {
+      "name": "trc-forall",
+      "dialect": "trc",
+      "input": "{ s.name | Student(s) ∧ ∀c ( Course(c) → ∃e ( Enrolled(e) ∧ e.sid = s.sid ∧ e.cid = c.cid ) ) }",
+      "sql": "SELECT DISTINCT s.name\nFROM Student AS s\nWHERE NOT EXISTS (SELECT * FROM Course AS c WHERE NOT EXISTS (SELECT * FROM Enrolled AS e WHERE e.sid = s.sid AND e.cid = c.cid));",
+      "answer": [
+        [
+          "ana"
+        ]
+      ],
+      "sql_datafusion": "SELECT DISTINCT s.name\nFROM Student AS s\nWHERE NOT EXISTS (SELECT * FROM Course AS c, Student AS s2 WHERE s2.sid = s.sid AND s2.name = s.name AND NOT EXISTS (SELECT * FROM Enrolled AS e WHERE e.sid = s2.sid AND e.cid = c.cid));"
+    },
+    {
+      "name": "trc-disjunction-becomes-union",
+      "dialect": "trc",
+      "input": "{ t.name | (Employee(t) ∧ t.salary > 65000) ∨ Student(t) }",
+      "sql": "SELECT DISTINCT t.name\nFROM Employee AS t\nWHERE t.salary > 65000\nUNION\nSELECT DISTINCT t.name\nFROM Student AS t;",
+      "answer": [
+        [
+          "ana"
+        ],
+        [
+          "bo"
+        ],
+        [
+          "cy"
+        ]
+      ]
+    },
+    {
+      "name": "trc-set-difference",
+      "dialect": "trc",
+      "input": "{ s.sid | Student(s) } − { e.sid | Enrolled(e) }",
+      "sql": "SELECT DISTINCT s.sid\nFROM Student AS s\nEXCEPT\nSELECT DISTINCT e.sid\nFROM Enrolled AS e;",
+      "answer": [
+        [
+          3
+        ]
+      ]
+    },
+    {
+      "name": "trc-definition",
+      "dialect": "trc",
+      "input": "Rich = { e.name, e.dept_id | Employee(e) ∧ e.salary > 50000 }\n{ r.name | Rich(r) ∧ ∃d ( Department(d) ∧ d.id = r.dept_id ∧ d.location = 'Paris' ) }",
+      "sql": "WITH Rich AS (\n  SELECT DISTINCT e.name, e.dept_id\n  FROM Employee AS e\n  WHERE e.salary > 50000\n)\nSELECT DISTINCT r.name\nFROM Rich AS r\nWHERE EXISTS (SELECT * FROM Department AS d WHERE d.id = r.dept_id AND d.location = 'Paris');",
+      "answer": [
+        [
+          "cy"
+        ]
+      ]
+    },
+    {
+      "name": "trc-latex-export",
+      "dialect": "trc",
+      "input": "\\{ e.name \\mid Employee(e) \\wedge e.salary > 50000 \\}",
+      "sql": "SELECT DISTINCT e.name\nFROM Employee AS e\nWHERE e.salary > 50000;",
+      "answer": [
+        [
+          "ana"
+        ],
+        [
+          "cy"
+        ],
+        [
+          "di"
+        ]
+      ]
+    },
+    {
+      "name": "drc-select-project",
+      "dialect": "drc",
+      "input": "{ ⟨n, s⟩ | ∃i, d ( Employee(i, n, s, d) ∧ s > 50000 ) }",
+      "sql": "SELECT DISTINCT e.name, e.salary\nFROM Employee AS e\nWHERE e.salary > 50000;",
+      "answer": [
+        [
+          "ana",
+          60000
+        ],
+        [
+          "cy",
+          70000
+        ],
+        [
+          "di",
+          55000
+        ]
+      ]
+    },
+    {
+      "name": "drc-join-by-shared-variable",
+      "dialect": "drc",
+      "input": "{ ⟨n⟩ | ∃i, s, d, dn ( Employee(i, n, s, d) ∧ Department(d, dn, 'Berlin') ) }",
+      "sql": "SELECT DISTINCT e.name\nFROM Employee AS e, Department AS d2\nWHERE d2.id = e.dept_id\n  AND d2.location = 'Berlin';",
+      "answer": [
+        [
+          "ana"
+        ],
+        [
+          "bo"
+        ]
+      ]
+    },
+    {
+      "name": "drc-ellipsis",
+      "dialect": "drc",
+      "input": "{ ⟨n⟩ | ∃i ( Employee(i, n, …) ∧ i < 3 ) }",
+      "sql": "SELECT DISTINCT e.name\nFROM Employee AS e\nWHERE e.id < 3;",
+      "answer": [
+        [
+          "ana"
+        ],
+        [
+          "bo"
+        ]
+      ]
+    },
+    {
+      "name": "drc-forall",
+      "dialect": "drc",
+      "input": "{ ⟨n⟩ | ∃s ( Student(s, n) ∧ ∀c, t ( Course(c, t) → Enrolled(s, c) ) ) }",
+      "sql": "SELECT DISTINCT s2.name\nFROM Student AS s2\nWHERE NOT EXISTS (SELECT * FROM Course AS c2 WHERE NOT EXISTS (SELECT * FROM Enrolled AS e WHERE e.sid = s2.sid AND e.cid = c2.cid));",
+      "answer": [
+        [
+          "ana"
+        ]
+      ],
+      "sql_datafusion": "SELECT DISTINCT s2.name\nFROM Student AS s2\nWHERE NOT EXISTS (SELECT * FROM Course AS c2, Student AS s3 WHERE s3.sid = s2.sid AND s3.name = s2.name AND NOT EXISTS (SELECT * FROM Enrolled AS e WHERE e.sid = s3.sid AND e.cid = c2.cid));"
+    },
+    {
+      "name": "drc-disjunction-becomes-union",
+      "dialect": "drc",
+      "input": "{ ⟨n⟩ | ∃i, s, d ( Employee(i, n, s, d) ∧ s > 65000 ) ∨ ∃i ( Student(i, n) ) }",
+      "sql": "SELECT DISTINCT e.name\nFROM Employee AS e\nWHERE e.salary > 65000\nUNION\nSELECT DISTINCT s2.name\nFROM Student AS s2;",
+      "answer": [
+        [
+          "ana"
+        ],
+        [
+          "bo"
+        ],
+        [
+          "cy"
+        ]
+      ]
+    },
+    {
+      "name": "drc-negation",
+      "dialect": "drc",
+      "input": "{ ⟨n⟩ | ∃i ( Student(i, n) ∧ ¬∃c ( Enrolled(i, c) ) ) }",
+      "sql": "SELECT DISTINCT s.name\nFROM Student AS s\nWHERE NOT EXISTS (SELECT * FROM Enrolled AS e WHERE e.sid = s.sid);",
+      "answer": [
+        [
+          "cy"
+        ]
+      ]
+    },
+    {
+      "name": "drc-ascii",
+      "dialect": "drc",
+      "input": "{ <n> | EXISTS i, s, d ( Employee(i, n, s, d) AND s > 50000 AND d = 1 ) }",
+      "sql": "SELECT DISTINCT e.name\nFROM Employee AS e\nWHERE e.salary > 50000\n  AND e.dept_id = 1;",
+      "answer": [
+        [
+          "ana"
+        ]
+      ]
+    }
+  ]
+}
