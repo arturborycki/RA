@@ -26,7 +26,18 @@ final class ReverseTranslationTests: XCTestCase {
             /// Present where the DataFusion setting writes something else.
             let sql_datafusion: String?
         }
+        struct Table: Decodable { let columns: [[String]] }
+        let database: [String: Table]
         let cases: [Case]
+
+        /// `CREATE TABLE` for every table, declared above each case — which is
+        /// what tells ÷ the attributes its two sides share.
+        var ddl: String {
+            database.keys.sorted().map { name in
+                let columns = database[name]!.columns.map { "\($0[0]) \($0[1])" }
+                return "CREATE TABLE \(name) (\(columns.joined(separator: ", ")));"
+            }.joined(separator: "\n")
+        }
     }
 
     /// Read from the source tree: a simulator test process can see the host's
@@ -48,11 +59,12 @@ final class ReverseTranslationTests: XCTestCase {
     // MARK: - Golden SQL
 
     func testGoldenCasesProduceExactlyTheRecordedSQL() throws {
-        let cases = try fixture().cases
-        XCTAssertFalse(cases.isEmpty)
-        for golden in cases {
-            XCTAssertEqual(try sql(golden.ra).text, golden.sql, golden.name)
-            XCTAssertEqual(try RAToSQL.translate(RAParser.parseScript(golden.ra), dialect: .datafusion).text,
+        let fixture = try fixture()
+        XCTAssertFalse(fixture.cases.isEmpty)
+        for golden in fixture.cases {
+            let input = fixture.ddl + "\n\n" + golden.ra
+            XCTAssertEqual(try sql(input).text, golden.sql, golden.name)
+            XCTAssertEqual(try RAToSQL.translate(RAParser.parseScript(input), dialect: .datafusion).text,
                            golden.sql_datafusion ?? golden.sql, "\(golden.name) (DataFusion)")
         }
     }
@@ -186,8 +198,10 @@ final class ReverseTranslationTests: XCTestCase {
     /// Prettify rewrites the buffer from the parse tree. Whatever it writes
     /// must mean exactly what was there: the same SQL comes out.
     func testPrettifiedAlgebraTranslatesToTheSameSQL() throws {
-        for golden in try fixture().cases {
-            let pretty = try RAParser.parseScript(golden.ra).prettyText(prelude: "")
+        let fixture = try fixture()
+        for golden in fixture.cases {
+            let pretty = try RAParser.parseScript(fixture.ddl + "\n\n" + golden.ra)
+                .prettyText(prelude: fixture.ddl)
             XCTAssertEqual(try RAToSQL.translate(RAParser.parseScript(pretty)).text, golden.sql,
                            "\(golden.name):\n\(pretty)")
         }

@@ -165,6 +165,11 @@ struct CalcLexer {
         default: break
         }
         if c == ".", peek(1) == ".", peek(2) == "." { return single(.ellipsis, length: 3) }
+        if c == "↑" || c == "↓" {
+            // Sort directions in a `sort by` annotation.
+            index += 1
+            return CalcToken(kind: .identifier, text: c == "↑" ? "ASC" : "DESC", position: start)
+        }
         if c == "<" { return single(.comparison("<")) }
         if c == ">" { return single(.comparison(">")) }
         if c == "-" { return single(.arithmetic("-")) }
@@ -296,6 +301,7 @@ final class CalcParser {
         let parser = CalcParser(tokens: try CalcLexer(chars, start: preludeEnd).tokenize())
         var definitions: [CalcDefinition] = []
         var result: CalcExpression? = nil
+        var annotations = Annotations()
 
         while true {
             while parser.current.kind == .semicolon { parser.advance() }
@@ -314,6 +320,7 @@ final class CalcParser {
                 definitions.append(CalcDefinition(name: name.text,
                                                   expression: try parser.parseSetExpression()))
             } else {
+                annotations = try parser.parseAnnotations()
                 result = try parser.parseSetExpression()
             }
             guard [.semicolon, .eof].contains(parser.current.kind) || parser.current.startsLine else {
@@ -325,13 +332,108 @@ final class CalcParser {
         if result == nil, let last = definitions.popLast() {
             result = last.expression
         }
-        guard let expression = result else {
+        guard var expression = result else {
             throw ParseError(message: "Empty expression.", position: preludeEnd)
         }
+        // The annotations also ride on the query itself, which is where the
+        // renderer looks for them — so Prettify writes them back out.
+        if case var .query(query) = expression {
+            if !annotations.ordering.isEmpty {
+                query.extensions.append(CalcExtension(
+                    kind: .sort,
+                    rendered: "sort by " + annotations.ordering.map(\.rendered).joined(separator: ", ")))
+            }
+            if annotations.limit != nil || annotations.offset != nil {
+                query.extensions.append(CalcExtension(
+                    kind: .limit,
+                    rendered: "limit " + RANode.limitSubscript(count: annotations.limit,
+                                                               offset: annotations.offset)))
+            }
+            expression = .query(query)
+        }
         var script = CalcScript(declarations: declarations, definitions: definitions,
-                                expression: expression, dialect: preferred)
+                                expression: expression, dialect: preferred,
+                                ordering: annotations.ordering, limit: annotations.limit,
+                                offset: annotations.offset)
         script.dialect = try CalcParser.dialect(of: script, preferring: preferred)
         return script
+    }
+
+    // MARK: Annotations
+
+    private struct Annotations {
+        var ordering: [CalcOrderKey] = []
+        var limit: Int? = nil
+        var offset: Int? = nil
+    }
+
+    private static let annotationWords: Set<String> = ["SORT", "LIMIT", "OFFSET", "GROUP",
+                                                       "HAVING", "APPLIED"]
+
+    private func isAnnotationWord(at offset: Int) -> Bool {
+        let token = tokens[min(index + offset, tokens.count - 1)]
+        return token.kind == .identifier && !token.quoted
+            && CalcParser.annotationWords.contains(token.text.uppercased())
+    }
+
+    /// `sort by total ↓, name ↑, limit 10 offset 20  applied to` — or nothing.
+    private func parseAnnotations() throws -> Annotations {
+        var found = Annotations()
+        guard isAnnotationWord(at: 0), !isWord("APPLIED") else { return found }
+
+        while true {
+            if isWord("SORT") {
+                advance()
+                guard isWord("BY") else {
+                    throw ParseError(message: "Expected 'by' after 'sort'.", position: current.position)
+                }
+                advance()
+                while true {
+                    var key = CalcOrderKey(term: try parseTerm(), descending: false)
+                    if isWord("DESC") { key.descending = true; advance() }
+                    else if isWord("ASC") { advance() }
+                    if isWord("NULLS") {
+                        advance()
+                        if isWord("FIRST") { key.nullsFirst = true; advance() }
+                        else if isWord("LAST") { key.nullsFirst = false; advance() }
+                    }
+                    found.ordering.append(key)
+                    if current.kind == .comma, !isAnnotationWord(at: 1) {
+                        advance()
+                        continue
+                    }
+                    break
+                }
+            } else if isWord("LIMIT") {
+                advance()
+                found.limit = Int(try expect(.number, "a number after limit").text)
+                if isWord("OFFSET") {
+                    advance()
+                    found.offset = Int(try expect(.number, "a number after offset").text)
+                }
+            } else if isWord("OFFSET") {
+                advance()
+                found.offset = Int(try expect(.number, "a number after offset").text)
+            } else if isWord("GROUP") || isWord("HAVING") {
+                throw ParseError(message: "Write grouping as an aggregate in the formula — " +
+                                          "h = COUNT{ u | … } — rather than as an annotation.",
+                                 position: current.position)
+            } else {
+                break
+            }
+            if current.kind == .comma { advance() }
+        }
+
+        guard isWord("APPLIED") else {
+            throw ParseError(message: "Expected 'applied to' after the annotations.",
+                             position: current.position)
+        }
+        advance()
+        guard isWord("TO") else {
+            throw ParseError(message: "Expected 'to' after 'applied'.", position: current.position)
+        }
+        advance()
+        return found
     }
 
     // MARK: Token cursor
@@ -398,7 +500,7 @@ final class CalcParser {
         let open = try expect(.leftBrace, "'{' starting a set-builder expression")
         let (result, style) = try parseResultSpec()
         _ = try expect(.bar, "'|' after the result")
-        let formula = try parseFormula()
+        let formula = CalcParser.scopingAggregates(try parseFormula(), result: result)
         guard current.kind == .rightBrace else {
             throw ParseError(message: "Expected '}' closing the expression opened here but found " +
                                       "'\(description)'.",
@@ -514,6 +616,13 @@ final class CalcParser {
     }
 
     private func parseAtom() throws -> CalcFormula {
+        // `h = COUNT{ u | Employee(u) ∧ u.dept_id = d }` — an aggregate bound to
+        // a variable, the extension the app writes for SQL's aggregates.
+        if current.kind == .identifier, peekKind(1) == .comparison("="),
+           peekKind(2) == .identifier, peekKind(3) == .leftBrace {
+            return try parseAggregateBinding()
+        }
+
         // A bracket may open a sub-formula or a term: `(a ∨ b)` or `(x + 1) > 2`.
         if current.kind == .leftParen {
             let save = index
@@ -572,6 +681,65 @@ final class CalcParser {
         throw ParseError(message: "Expected a comparison or a relation atom such as R(t) after " +
                                   "'\(start.text)'.",
                          position: current.position)
+    }
+
+    private func parseAggregateBinding() throws -> CalcFormula {
+        let result = CalcVar(name: advance().text, relation: nil)
+        advance() // =
+        let function = advance().text.uppercased()
+        advance() // {
+        let distinct = isWord("DISTINCT")
+        if distinct { advance() }
+        var collected: [CalcTerm] = []
+        repeat {
+            if current.kind == .comma { advance() }
+            collected.append(try parseTerm())
+        } while current.kind == .comma
+        _ = try expect(.bar, "'|' after what the aggregate collects")
+        let condition = try parseFormula()
+        _ = try expect(.rightBrace, "'}' closing the aggregate")
+
+        // COUNT over whole tuples counts rows; anything else collects a value.
+        let countsTuples = function == "COUNT" && (collected.count > 1
+            || collected.allSatisfy { term in
+                if case let .variable(v) = term {
+                    return condition.conjuncts.contains { part in
+                        if case let .relationAtom(_, terms, _) = part, terms.count == 1,
+                           case let .variable(ranged) = terms[0] { return ranged.name == v.name }
+                        return false
+                    }
+                }
+                return false
+            })
+        return .aggregateBinding(result: result, function: function, distinct: distinct,
+                                 element: countsTuples ? nil : collected.first,
+                                 variables: [], condition: condition)
+    }
+
+    /// An aggregate's own variables are the ones nothing outside it mentions —
+    /// `u` in `h = COUNT{ u | Employee(u) ∧ u.dept_id = d }`, but not `d`. The
+    /// printed form does not list them, so they are worked out here.
+    private static func scopingAggregates(_ formula: CalcFormula, result: [ResultColumn]) -> CalcFormula {
+        var outside = Set(result.flatMap { $0.term.variables.map(\.name) })
+        for part in formula.conjuncts {
+            if case .aggregateBinding = part { continue }
+            outside.formUnion(part.variables.map(\.name))
+        }
+        for part in formula.conjuncts {
+            if case let .aggregateBinding(name, _, _, _, _, _) = part { outside.insert(name.name) }
+        }
+        return CalcFormula.conjunction(formula.conjuncts.map { part in
+            guard case let .aggregateBinding(name, function, distinct, element, _, condition) = part
+            else { return part }
+            var own: [CalcVar] = []
+            for variable in condition.variables.union(element?.variables ?? [])
+            where !outside.contains(variable.name) && !own.contains(variable) {
+                own.append(variable)
+            }
+            own.sort { $0.name < $1.name }
+            return .aggregateBinding(result: name, function: function, distinct: distinct,
+                                     element: element, variables: own, condition: condition)
+        })
     }
 
     private static func isEllipsis(_ term: CalcTerm) -> Bool {

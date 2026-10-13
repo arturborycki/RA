@@ -226,6 +226,98 @@
           "ana"
         ]
       ]
+    },
+    {
+      "name": "trc-aggregate",
+      "dialect": "trc",
+      "input": "{ ⟨d, h⟩ | ∃t ( Employee(t) ∧ t.dept_id = d ) ∧ h = COUNT{ u | Employee(u) ∧ u.dept_id = d } ∧ h > 1 }",
+      "sql": "SELECT DISTINCT t.dept_id AS d, (SELECT COUNT(*) FROM Employee AS u WHERE u.dept_id = t.dept_id) AS h\nFROM Employee AS t\nWHERE (SELECT COUNT(*) FROM Employee AS u WHERE u.dept_id = t.dept_id) > 1;",
+      "answer": [
+        [
+          1,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "drc-aggregate",
+      "dialect": "drc",
+      "input": "{ ⟨d, p⟩ | ∃i, n, s ( Employee(i, n, s, d) ) ∧ p = SUM{ s2 | Employee(i2, n2, s2, d2) ∧ d2 = d } }",
+      "sql": "SELECT DISTINCT e.dept_id, (SELECT SUM(e2.salary) FROM Employee AS e2 WHERE e2.dept_id = e.dept_id) AS p\nFROM Employee AS e;",
+      "answer": [
+        [
+          1,
+          100000
+        ],
+        [
+          2,
+          70000
+        ],
+        [
+          3,
+          55000
+        ]
+      ]
+    },
+    {
+      "name": "trc-sort-and-limit",
+      "dialect": "trc",
+      "input": "sort by e.salary ↓, limit 2  applied to { e.name, e.salary | Employee(e) }",
+      "sql": "SELECT DISTINCT e.name, e.salary\nFROM Employee AS e\nORDER BY e.salary DESC\nLIMIT 2;",
+      "answer": [
+        [
+          "cy",
+          70000
+        ],
+        [
+          "ana",
+          60000
+        ]
+      ]
+    },
+    {
+      "name": "drc-sort-by-result-variable",
+      "dialect": "drc",
+      "input": "sort by s ↓  applied to { ⟨n, s⟩ | ∃i, d ( Employee(i, n, s, d) ) }",
+      "sql": "SELECT DISTINCT e.name, e.salary\nFROM Employee AS e\nORDER BY salary DESC;",
+      "answer": [
+        [
+          "ana",
+          60000
+        ],
+        [
+          "bo",
+          40000
+        ],
+        [
+          "cy",
+          70000
+        ],
+        [
+          "di",
+          55000
+        ]
+      ]
+    },
+    {
+      "name": "trc-aggregate-sorted",
+      "dialect": "trc",
+      "input": "sort by h ↓  applied to\n{ ⟨d, h⟩ | ∃t ( Employee(t) ∧ t.dept_id = d ) ∧ h = COUNT{ u | Employee(u) ∧ u.dept_id = d } }",
+      "sql": "SELECT DISTINCT t.dept_id AS d, (SELECT COUNT(*) FROM Employee AS u WHERE u.dept_id = t.dept_id) AS h\nFROM Employee AS t\nORDER BY h DESC;",
+      "answer": [
+        [
+          1,
+          2
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          3,
+          1
+        ]
+      ]
     }
   ]
 }

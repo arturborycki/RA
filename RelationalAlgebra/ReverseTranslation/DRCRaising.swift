@@ -100,6 +100,10 @@ final class DRCRaising {
                 others.append(conjunct)
             }
         }
+        // An aggregate's result is a value of its own, not a column of a tuple.
+        for case let .aggregateBinding(result, _, _, _, _, _) in others {
+            env[result.name] = .variable(result)
+        }
         for other in others {
             parts.append(try raise(other, env: env))
         }
@@ -268,7 +272,20 @@ final class DRCRaising {
         case .constant:
             return formula
 
-        case .predicate, .aggregateBinding:
+        case let .aggregateBinding(result, function, distinct, element, variables, condition):
+            // The comprehension is a scope of its own, raised like an ∃'s body;
+            // what it collects is read through the bindings made inside it.
+            let names = Set(variables.map(\.name))
+            // The comprehension's own variables include any its ∃s bind, so
+            // those may be lifted into it without clashing.
+            let conjuncts = try hoistingExistentials(condition.conjuncts, avoiding: Set(env.keys))
+            let (tuples, parts, local) = try raiseScope(names, conjuncts, env: env)
+            return .aggregateBinding(
+                result: result, function: function, distinct: distinct,
+                element: try element.map { try raise($0, env: local, context: "\(function){ … }") },
+                variables: tuples, condition: CalcFormula.conjunction(parts))
+
+        case .predicate:
             throw TranslationError(message: "This formula uses a construct domain-calculus " +
                                             "input does not support yet.")
         }
@@ -291,6 +308,15 @@ final class DRCRaising {
 
         // Atoms that mention a variable not yet bound range it here; any other
         // atom only tests membership.
+        let (tuples, parts, _) = try raiseScope(names, conjuncts, env: env)
+        return .exists(tuples, CalcFormula.conjunction(parts))
+    }
+
+    /// Bind a scope's variables — an ∃'s, or an aggregate comprehension's — by
+    /// the atoms that mention them, and raise everything else in the scope.
+    private func raiseScope(_ names: Set<String>, _ conjuncts: [CalcFormula],
+                            env: [String: CalcTerm])
+        throws -> ([CalcVar], [CalcFormula], [String: CalcTerm]) {
         // The quantified names are new here even if an outer scope uses them.
         var local = env
         for name in names { local[name] = nil }
@@ -320,7 +346,7 @@ final class DRCRaising {
             throw TranslationError(message: "\(unbound) is quantified but no relation atom in " +
                                             "the quantifier's body ranges it.")
         }
-        return .exists(tuples, CalcFormula.conjunction(parts))
+        return (tuples, parts, local)
     }
 
     // MARK: - Terms

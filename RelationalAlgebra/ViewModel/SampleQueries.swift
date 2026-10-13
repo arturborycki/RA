@@ -119,6 +119,21 @@ enum SampleQueries {
                 language: .trc),
 
             SampleQuery(
+                title: "Aggregate: COUNT{ … }",
+                schema: companySchema,
+                sql: """
+                { ⟨d, h⟩ | ∃t ( Employee(t) ∧ t.dept_id = d ) ∧
+                    h = COUNT{ u | Employee(u) ∧ u.dept_id = d } ∧ h > 1 }
+                """,
+                language: .trc),
+
+            SampleQuery(
+                title: "Sort and limit",
+                schema: companySchema,
+                sql: "sort by e.salary ↓, limit 2  applied to { e.name, e.salary | Employee(e) }",
+                language: .trc),
+
+            SampleQuery(
                 title: "Unsafe: no SQL",
                 schema: companySchema,
                 sql: "{ t | ¬Employee(t) }",
@@ -157,6 +172,15 @@ enum SampleQueries {
                 title: "Typed with words",
                 schema: companySchema,
                 sql: "{ <n> | EXISTS i, s, d ( Employee(i, n, s, d) AND s > 50000 AND d = 1 ) }",
+                language: .drc),
+
+            SampleQuery(
+                title: "Aggregate: SUM{ … }",
+                schema: companySchema,
+                sql: """
+                { ⟨d, p⟩ | ∃i, n, s ( Employee(i, n, s, d) ) ∧
+                    p = SUM{ s2 | Employee(i2, n2, s2, d2) ∧ d2 = d } }
+                """,
                 language: .drc),
         ])
 

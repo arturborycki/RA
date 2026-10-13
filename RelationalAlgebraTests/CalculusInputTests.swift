@@ -120,6 +120,32 @@ final class CalculusInputTests: XCTestCase {
         }
     }
 
+    /// Aggregates and the sort / limit annotations are extensions, so the
+    /// round trip above skips them; this is the sample that has all of them.
+    func testTheAppsOwnAggregatesAndAnnotationsReadBack() throws {
+        guard let sample = SampleQueries.basics.queries.first(where: { $0.title == "Group + aggregate" })
+        else { return XCTFail("missing sample") }
+        let bundle = AppViewModel.translate(try SQLParser.parseScript(sample.text))
+        for translation in [bundle.trc, bundle.drc] {
+            var simplified = translation
+            simplified.root = translation.simplified
+            for style in CalcRenderer.Style.allCases {
+                let text = CalcRenderer(style: style).inline(simplified)
+                let parsed = try CalcParser.parseScript(text, preferring: translation.dialect)
+                XCTAssertFalse(parsed.ordering.isEmpty, "\(translation.dialect), \(style):\n\(text)")
+                XCTAssertNoThrow(try CalcToSQL.translate(parsed),
+                                 "\(translation.dialect), \(style):\n\(text)")
+            }
+        }
+    }
+
+    func testGroupingAnnotationsAreRefusedWithAWayForward() {
+        XCTAssertThrowsError(try CalcParser.parseScript(
+            "group by t.a  applied to { t.a | R(t) }", preferring: .trc)) { error in
+            XCTAssertTrue((error as? ParseError)?.message.contains("COUNT{") == true, "\(error)")
+        }
+    }
+
     func testCalculusSamplesTranslateExceptTheUnsafeOne() throws {
         for sample in SampleQueries.trcGroups.flatMap(\.queries) + SampleQueries.drcGroups.flatMap(\.queries) {
             let parsed = try CalcParser.parseScript(sample.text,

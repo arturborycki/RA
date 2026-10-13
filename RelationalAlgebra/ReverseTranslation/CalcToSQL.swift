@@ -40,6 +40,10 @@ final class CalcToSQL {
     private var definitionColumns: [String: [String]] = [:]
     private let names: NameAllocator
     private var diagnostics: [CalcDiagnostic] = []
+    /// Value variables bound to an aggregate — `h = COUNT{ … }` — by name. They
+    /// stay variables in the formula and become a scalar sub-query wherever
+    /// they are read.
+    private var aggregateValues: [String: CalcFormula] = [:]
     private var steps: [ReverseStep] = []
     private let renderer = CalcRenderer()
     private let printer = SQLPrinter()
@@ -82,6 +86,9 @@ final class CalcToSQL {
             }
         }
         var query = try lower(script.expression, raising: raising)
+        if !script.ordering.isEmpty || script.limit != nil || script.offset != nil {
+            query = try applyingAnnotations(script, to: query)
+        }
         if !ctes.isEmpty {
             query = .with(ctes: ctes, body: query)
         }
@@ -160,6 +167,7 @@ final class CalcToSQL {
 
         let free = Set(query.result.flatMap { $0.term.variables.map(\.name) })
             .union(query.formula.freeVariables.map(\.name))
+            .subtracting(aggregateValues.keys)
         var conjuncts = query.formula.conjuncts
 
         if let i = conjuncts.firstIndex(where: { DRCRaising.rangesDisjunctively($0, free) }),
@@ -219,10 +227,14 @@ final class CalcToSQL {
     /// to eliminate.
     private func eliminatingValueVariables(_ query: CalcQuery) throws -> SQLQuery? {
         let topRanged = Set(query.formula.conjuncts.compactMap { CalcToSQL.range($0)?.0 })
+        let aggregated = query.formula.conjuncts.compactMap { part -> String? in
+            if case let .aggregateBinding(result, _, _, _, _, _) = part { return result.name }
+            return nil
+        }
         let values = Set(query.result.flatMap { column -> [String] in
             if case let .variable(v) = column.term { return [v.name] }
             return []
-        }).subtracting(topRanged)
+        }).union(aggregated).subtracting(topRanged).subtracting(aggregateValues.keys)
         guard !values.isEmpty else { return nil }
 
         var conjuncts = query.formula.conjuncts
@@ -258,7 +270,10 @@ final class CalcToSQL {
         }
 
         var copy = query
-        for value in values.sorted() {
+        // Aggregates last: their conditions mention the other values, which
+        // must be replaced by attributes first.
+        let aggregates = Set(aggregated)
+        for value in values.sorted() where !aggregates.contains(value) {
             guard let i = lifted.firstIndex(where: { CalcToSQL.binding($0, of: value) != nil }),
                   let attribute = CalcToSQL.binding(lifted[i], of: value) else {
                 throw TranslationError(message: "\(value) is in the result but neither ranged " +
@@ -274,9 +289,136 @@ final class CalcToSQL {
                 return ResultColumn(term: attribute, name: column.name ?? (keepsName ? nil : value))
             }
         }
+        for value in values.sorted() where aggregates.contains(value) {
+            guard let i = lifted.firstIndex(where: { part in
+                if case let .aggregateBinding(result, _, _, _, _, _) = part { return result.name == value }
+                return false
+            }) else { continue }
+            aggregateValues[value] = lifted.remove(at: i)
+            copy.result = copy.result.map { column in
+                guard case let .variable(v) = column.term, v.name == value else { return column }
+                return ResultColumn(term: column.term, name: column.name ?? value)
+            }
+        }
         copy.formula = CalcFormula.conjunction(lifted)
         copy.resultStyle = .compact
         return try lower(copy)
+    }
+
+    /// `h = SUM{ u.salary | Employee(u) ∧ u.dept_id = t.dept_id }` as the scalar
+    /// sub-query `(SELECT SUM(u.salary) FROM Employee AS u WHERE …)`: first-order
+    /// calculus has no aggregates, and SQL computes one per row this way, which
+    /// is what the comprehension says.
+    private func aggregateExpression(_ binding: CalcFormula, scope: [String: String]) throws -> Expression {
+        guard case let .aggregateBinding(_, function, distinct, element, variables, condition) = binding
+        else { return .nullLiteral }
+        let names = Set(variables.map(\.name))
+        var inner = scope
+        var bound: Set<String> = []
+        var stmt = SelectStatement()
+        var others: [CalcFormula] = []
+        for conjunct in condition.conjuncts {
+            if case let (variable, relation)? = CalcToSQL.range(conjunct), names.contains(variable),
+               !bound.contains(variable) {
+                bound.insert(variable)
+                inner[variable] = relation
+                stmt.from.append(.named(name: relation, alias: CalcToSQL.alias(variable, relation)))
+            } else {
+                others.append(conjunct)
+            }
+        }
+        if let unranged = names.subtracting(bound).sorted().first {
+            throw TranslationError(message: "\(unranged) is collected by \(function){ … } but no " +
+                                            "relation atom in it ranges \(unranged).")
+        }
+        let argument = try element.map { try term($0, scope: inner) } ?? .star
+        stmt.projections = [.expression(.function(name: function, args: [argument], distinct: distinct),
+                                        alias: nil)]
+        stmt.whereClause = CalcToSQL.allOf(try others.map { try condition($0, scope: inner) })
+        let expression = Expression.subquery(.select(stmt))
+        note(.extended("\(function){ … }",
+                       "Aggregates are an extension to first-order calculus. Each becomes a " +
+                       "sub-query computing the aggregate for the current row."))
+        record("\(function){ … } → sub-query", renderer.inline(binding), printer.expression(expression),
+               "An aggregate over a set comprehension becomes a scalar sub-query: the " +
+               "comprehension's ranges are its FROM, its condition its WHERE, and the collected " +
+               "value the aggregate's argument.")
+        return expression
+    }
+
+    // MARK: - Annotations
+
+    /// `sort by …, limit …  applied to { … }` as ORDER BY and LIMIT — on the
+    /// query itself when it can take them, else on a wrapper around it.
+    private func applyingAnnotations(_ script: CalcScript, to query: SQLQuery) throws -> SQLQuery {
+        let firstResult = CalcToSQL.firstQuery(script.expression).result
+        let outputs = CalcToSQL.outputNames(query)
+        var plain: SelectStatement? = nil
+        if case let .select(stmt) = query, stmt.orderBy.isEmpty, stmt.limit == nil, stmt.offset == nil {
+            plain = stmt
+        }
+
+        let keys = try script.ordering.map { key -> OrderItem in
+            let expression: Expression
+            if case let .variable(v) = key.term,
+               let i = firstResult.firstIndex(where: { column in
+                   if case let .variable(r) = column.term { return r.name == v.name }
+                   return false
+               }), i < outputs.count, let name = outputs[i] {
+                // A result variable sorts by the column it became.
+                expression = .column(table: nil, name: name)
+            } else if case let .attribute(v, attribute) = key.term {
+                expression = .column(table: plain == nil ? nil : v.name, name: attribute)
+            } else {
+                expression = try term(key.term, scope: [:])
+            }
+            return OrderItem(expression: expression, descending: key.descending,
+                             nullsFirst: key.nullsFirst)
+        }
+
+        var stmt: SelectStatement
+        if let plain {
+            stmt = plain
+        } else {
+            stmt = SelectStatement()
+            stmt.projections = [.star]
+            stmt.from = [.derived(query, alias: names.fresh(for: "t"))]
+        }
+        stmt.orderBy = keys
+        stmt.limit = script.limit
+        stmt.offset = script.offset
+        let result = SQLQuery.select(stmt)
+        note(.annotated("sort / limit",
+                        "Order and row limits are outside first-order calculus; the annotations " +
+                        "outside the braces become ORDER BY and LIMIT on the finished query."))
+        record("Annotations → ORDER BY / LIMIT", "", printer.print(result),
+               "The annotations written outside the braces apply to the finished query, which " +
+               "is where SQL puts ORDER BY and LIMIT.")
+        return result
+    }
+
+    private static func firstQuery(_ expression: CalcExpression) -> CalcQuery {
+        switch expression {
+        case let .query(query):            return query
+        case let .setOperation(_, left, _): return firstQuery(left)
+        }
+    }
+
+    /// The name each output column of a query goes by, where it has one.
+    private static func outputNames(_ query: SQLQuery) -> [String?] {
+        switch query {
+        case let .select(stmt):
+            return stmt.projections.map { item in
+                guard case let .expression(expression, alias) = item else { return nil }
+                if let alias { return alias }
+                if case let .column(_, name) = expression { return name }
+                return nil
+            }
+        case let .setOperation(_, left, _, _):
+            return outputNames(left)
+        case let .with(_, body):
+            return outputNames(body)
+        }
     }
 
     /// `t.a = value` or `value = t.a`: the attribute a value is equated to.
@@ -340,7 +482,8 @@ final class CalcToSQL {
             return try SQLParser.parseStandaloneExpression(rendered)
 
         case .aggregateBinding:
-            throw TranslationError(message: "Aggregates are not supported in calculus input yet.")
+            throw TranslationError(message: "An aggregate h = F{ … } belongs at the top level of " +
+                                            "a query, beside the other conditions.")
         }
     }
 
@@ -435,6 +578,9 @@ final class CalcToSQL {
         case let .attribute(v, attribute):
             return .column(table: v.name, name: attribute)
         case let .variable(v):
+            if let binding = aggregateValues[v.name] {
+                return try aggregateExpression(binding, scope: scope)
+            }
             throw TranslationError(message: "\(v.name) stands for a whole tuple here. Compare its " +
                                             "attributes instead, such as \(v.name).id.")
         case let .literal(text), let .opaque(text):
@@ -602,7 +748,13 @@ extension CalcFormula {
             return .implies(sub(lhs), sub(rhs))
         case let .predicate(rendered, terms):
             return .predicate(rendered: rendered, terms: terms.map(term))
-        case .aggregateBinding, .constant:
+        case let .aggregateBinding(result, function, distinct, element, variables, condition):
+            // The comprehension's own variables shadow an outer one of the same name.
+            guard !variables.contains(where: { $0.name == name }) else { return self }
+            return .aggregateBinding(result: result, function: function, distinct: distinct,
+                                     element: element.map(term), variables: variables,
+                                     condition: sub(condition))
+        case .constant:
             return self
         }
     }
