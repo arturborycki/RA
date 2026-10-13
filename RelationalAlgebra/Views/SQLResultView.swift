@@ -66,7 +66,7 @@ struct SQLCard: View {
             }
 
             ScrollView(.horizontal, showsIndicators: true) {
-                Text(sql)
+                Text(SyntaxColors.attributed(sql, language: .sql))
                     .font(.system(.callout, design: .monospaced))
                     .textSelection(.enabled)
                     .lineSpacing(4)

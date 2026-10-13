@@ -16,7 +16,6 @@ struct EditorView: View {
     @State private var showImporter = false
     @State private var showSchema = false
     @State private var importError: String?
-    @FocusState private var editorFocused: Bool
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
@@ -57,44 +56,30 @@ struct EditorView: View {
 
     private var editor: some View {
         ZStack(alignment: .topLeading) {
+            HighlightingEditor(text: $viewModel.text,
+                               language: viewModel.inputLanguage,
+                               errorOffset: errorOffset,
+                               symbols: SymbolBar.symbols(for: viewModel.inputLanguage))
             if viewModel.text.isEmpty {
+                // Over the text view, inset to where its first character goes.
                 Text(viewModel.inputLanguage.placeholder)
                     .foregroundStyle(.secondary)
                     .font(.system(.body, design: .monospaced))
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, 17)
                     .padding(.vertical, 16)
                     .allowsHitTesting(false)
             }
-            TextEditor(text: $viewModel.text)
-                .font(.system(.body, design: .monospaced))
-                .autocorrectionDisabled(true)
-                .textInputAutocapitalization(.never)
-                .focused($editorFocused)
-                .padding(12)
-                .scrollContentBackground(.hidden)
-                .background(Color(.secondarySystemGroupedBackground))
-                // On the text editor itself, not in the screen's toolbar
-                // builder alongside the primary-action group: a keyboard group
-                // sharing a builder with other placements does not reliably
-                // reach the accessory bar. The iPhone keyboard covers most of
-                // the editor and has no hide key of its own, so this is the
-                // only way back out of it.
-                .toolbar {
-                    ToolbarItemGroup(placement: .keyboard) {
-                        if let symbols = SymbolBar.symbols(for: viewModel.inputLanguage) {
-                            SymbolBar(symbols: symbols)
-                        } else {
-                            Spacer()
-                        }
-                        Button {
-                            editorFocused = false
-                        } label: {
-                            Image(systemName: "keyboard.chevron.compact.down")
-                        }
-                        .accessibilityLabel("Hide keyboard")
-                    }
-                }
         }
+        .background(Color(.secondarySystemGroupedBackground))
+    }
+
+    /// Where the parse error is, as an offset into the editor's text. The SQL
+    /// parser counts from the first non-blank character; the others from the
+    /// start of the buffer.
+    private var errorOffset: Int? {
+        guard let position = viewModel.errorPosition else { return nil }
+        guard viewModel.inputLanguage == .sql else { return position }
+        return position + viewModel.text.prefix { $0.isWhitespace }.count
     }
 
     // MARK: Status bar
@@ -196,7 +181,6 @@ struct EditorView: View {
 
         Button(role: .destructive) {
             viewModel.replaceText("")
-            editorFocused = true
         } label: {
             Label("Clear", systemImage: "trash")
         }
@@ -252,11 +236,14 @@ struct EditorView: View {
 /// also has a typed word (`sigma`, `join`, …), so the bar is a shortcut, not a
 /// requirement.
 ///
-/// A key inserts at the cursor by sending `insertText(_:)` down the responder
-/// chain to whatever text view is being edited — SwiftUI's `TextEditor` does
-/// not expose its selection on iOS 17, but its text view still answers that.
+/// A key inserts at the editor's cursor.
 struct SymbolBar: View {
     let symbols: [String]
+    /// What a key does. The editor inserts at its cursor directly.
+    var insert: (String) -> Void = { symbol in
+        UIApplication.shared.sendAction(#selector(UIKeyInput.insertText(_:)),
+                                        to: nil, from: symbol, for: nil)
+    }
 
     static func symbols(for language: InputLanguage) -> [String]? {
         switch language {
@@ -276,8 +263,7 @@ struct SymbolBar: View {
             HStack(spacing: 4) {
                 ForEach(symbols, id: \.self) { symbol in
                     Button {
-                        UIApplication.shared.sendAction(#selector(UIKeyInput.insertText(_:)),
-                                                        to: nil, from: symbol, for: nil)
+                        insert(symbol)
                     } label: {
                         Text(symbol)
                             .font(.system(.title3, design: .serif))
