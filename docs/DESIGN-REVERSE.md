@@ -1,6 +1,6 @@
 # Design: Typing RA or Calculus and Getting SQL Back
 
-**Status:** proposal · **Scope:** `RelationalAlgebra` iOS/iPadOS app · **Follows:** [DESIGN-CALCULUS.md](DESIGN-CALCULUS.md)
+**Status:** implemented · **Scope:** `RelationalAlgebra` iOS/iPadOS app · **Follows:** [DESIGN-CALCULUS.md](DESIGN-CALCULUS.md)
 
 The app is a one-way pipeline today: SQL in, RA / TRC / DRC out. This document designs
 the reverse direction: the user types a **relational-algebra** expression, a

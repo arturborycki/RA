@@ -116,6 +116,7 @@ jobs:
             -scheme RelationalAlgebra \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
             CODE_SIGNING_ALLOWED=NO \
+            SWIFT_COMPILATION_MODE=wholemodule \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 120 \
             -maximum-test-execution-time-allowance 300 \

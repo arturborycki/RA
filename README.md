@@ -2,17 +2,22 @@
   <img src="docs/icon.png" alt="RA app icon" width="160" height="160">
 </p>
 
-<h1 align="center">RA — SQL → Relational Algebra for iPadOS</h1>
+<h1 align="center">RA — SQL ⇄ Relational Algebra & Calculus for iPadOS</h1>
 
 A native **iPadOS** app that converts a SQL query — typed, pasted, or imported
 from a `.sql` file — into a **step-by-step relational-algebra derivation**, a
-final one-line **RA formula**, and an interactive **operator-tree diagram**.
+final one-line **RA formula**, and an interactive **operator-tree diagram**,
+plus **tuple** and **domain relational calculus**.
+
+It also works **the other way round**: type a relational-algebra expression or a
+calculus formula and get back **SQL you can run** on **DuckDB** or
+**DataFusion**, along with every other notation for the same query.
 
 Built entirely in **Swift + SwiftUI** (no third-party dependencies). The layout
 is adaptive: a two-column split view on iPad (regular width) and an
 Editor / Result tab bar on iPhone (compact width); it also runs on Mac Catalyst.
 
-<p align="center"><em>SQL in → σ, π, ⋈, γ, δ, τ out.</em></p>
+<p align="center"><em>SQL in → σ, π, ⋈, γ, δ, τ out — and σ, π, ∃, ∀ in → SQL out.</em></p>
 
 ---
 
@@ -224,9 +229,133 @@ rather than attributed to a guess, and a relation whose attributes were only
 inferred says so — which is what a domain-calculus atom will need, since `R(x, y, z)`
 is positional.
 
+## Going the other way: RA and calculus → SQL
+
+The **Input** picker above the editor chooses what you type: **SQL**, **RA**,
+**TRC** or **DRC**. Each language keeps its own buffer, so switching back and
+forth loses nothing. For any input other than SQL, the results pane gains an
+**SQL** tab, selected automatically, with two views:
+
+- **Formula** — the generated SQL, colour-highlighted and copyable, with an
+  **Edit as SQL** button that moves it into the SQL editor.
+- **Steps** — one card for each decision the translator made: which operator
+  closed a `SELECT` block, why an assignment was inlined or became a CTE, how a
+  quantifier became `EXISTS`.
+
+Every input lowers to the same SQL syntax tree the forward direction parses, so
+the RA, TRC, DRC and Compare tabs work unchanged for typed algebra or calculus.
+That makes this a round trip as well as a translator: type RA, read it back in
+domain calculus. The design is in
+[`docs/DESIGN-REVERSE.md`](docs/DESIGN-REVERSE.md).
+
+### Typing relational algebra
+
+The app accepts what it prints. A formula copied from the RA view pastes straight
+back in:
+
+```
+π[e.name, d.name → department] ( ρ[e](Employee) ⋈[e.dept_id = d.id] σ[d.location = 'Berlin'](ρ[d](Department)) )
+```
+```sql
+SELECT DISTINCT e.name, d.name AS department
+FROM Employee AS e
+JOIN Department AS d ON e.dept_id = d.id
+WHERE d.location = 'Berlin';
+```
+
+- **Glyphs, words or LaTeX.** `σ`, `sigma` and `\sigma` are the same
+  operator, and so on for `π pi`, `ρ rho`, `⋈ join`, `× cross`, `∪ union`,
+  `∩ intersect`, `− minus`, `÷ divide` and the rest. Subscripts are `[…]` or
+  `_{…}`.
+- **Every operator in the legend**, including the outer joins, γ
+  (`γ[dept_id; COUNT(*) → n]`), δ, τ (`τ[salary ↓]`), `LIMIT[n]` and
+  division ÷.
+- **Named steps.** Write a derivation one line at a time with `=`, `←` or `:=`.
+  The last line is the query. A name that is read once is inlined, a name
+  read more than once becomes a `WITH` clause, and an unused name is dropped
+  with a note. `R₁` and `R1` are the same name.
+
+  ```
+  R₁ = σ[salary > 50000](Employee)
+  R₂ = π[R₁.name, location](R₁ ⋈[dept_id = Department.id] Department)
+  ```
+- **Renaming attributes**: `ρ[S(a, b)](R)` becomes `WITH S(a, b) AS (…)`.
+- **`CREATE TABLE` above the expression** declares column order. The
+  translator needs it for natural join, for division and for `*`.
+
+The translator keeps one `SELECT` block open for as long as it can. σ and joins
+extend it; π, δ, γ and the set operations close it, and anything above a closed
+block reads it as a derived table. So `π[a](σ[p](R ⋈ S))` comes out as one flat
+query, not three nested ones.
+
+The algebra is a set algebra and SQL is not, so `π` becomes `SELECT DISTINCT`.
+The info banner says so.
+
+### Typing calculus
+
+TRC and DRC take the notation the calculus views print, in Unicode, ASCII
+(`exists`, `forall`, `and`, `->`, `<n>`) or LaTeX:
+
+| Formula | SQL |
+|---|---|
+| `{ e.name \| Employee(e) ∧ e.salary > 50000 }` | `SELECT DISTINCT e.name FROM Employee AS e WHERE e.salary > 50000` |
+| `∃d ( Department(d) ∧ … )` | `EXISTS (SELECT * FROM Department AS d WHERE …)` |
+| `∀c ( Course(c) → φ )` | `NOT EXISTS (SELECT * FROM Course AS c WHERE NOT φ)` |
+| `{ t.name \| P(t) ∨ Q(t) }` | `… UNION …` |
+| `{ s.sid \| Student(s) } − { e.sid \| Enrolled(e) }` | `… EXCEPT …` |
+| `h = COUNT{ u \| Employee(u) ∧ u.dept_id = d }` | a correlated scalar subquery |
+| `sort by h ↓, limit 5  applied to { … }` | `ORDER BY h DESC LIMIT 5` |
+
+- **Ranges in words**: `e in Employee`, `∃d ∈ Department ( … )`.
+- **Definitions**: `Rich = { … }` on a line of its own, then a formula that
+  uses `Rich(r)`. Each definition becomes a CTE.
+- **Domain calculus** is raised to tuple calculus first: the reverse of the
+  forward lowering. A DRC atom is positional, so put `CREATE TABLE` above the
+  formula to name the columns. Without it, columns are called `col1`, `col2`, …,
+  with a warning. `Employee(i, n, …)` leaves the trailing columns open.
+- **Unsafe formulas are refused.** `{ t | ¬R(t) }` has no SQL, because its
+  answer depends on the infinite domain. The safety checker that labels the
+  forward translation stops this one before any SQL is written, and the error
+  says which variable is unbounded.
+
+If the formula is clearly TRC or DRC, the app reads it that way whichever tab is
+selected.
+
+### DuckDB or DataFusion
+
+The **Engine** picker on the SQL tab chooses the dialect, and the choice is
+remembered. Most queries print the same for both. Where the two engines
+differ, the SQL changes and a banner explains why:
+
+| | DuckDB | DataFusion |
+|---|---|---|
+| A subquery correlated **two levels out** (typical of `∀` and ÷) | written directly | re-ranged one level down and joined column by column, because DataFusion rejects such a subquery (checked on DataFusion 55) |
+| Division `R ÷ S` | double `NOT EXISTS` | `π_A(R) − π_A((π_A(R) × S) − R)` as `EXCEPT` |
+| `a / b` on integers | real division | truncating division, noted in a banner |
+
+Joins are always written so that both engines accept them. A `JOIN` only
+follows a single `FROM` item, and comma lists become `CROSS JOIN`, because
+DataFusion rejects `FROM a, b JOIN c ON <a…>`.
+
+### Editor
+
+- **Syntax colouring** in every input language:
+  - keywords and operators stand out from tables, columns and calculus
+    variables;
+  - strings, numbers and comments each get their own colour;
+  - the token a parse error points at is underlined in red;
+  - the generated SQL is coloured the same way.
+- **Glyph keys** above the keyboard (σ π ρ ⋈ … or ∃ ∀ ∧ ∨ ¬ …) insert at the
+  cursor. Smart quotes and dashes are off, so a typed `'` stays a quote.
+- **Prettify** re-prints the typed algebra or calculus in the app's canonical
+  form.
+- **Examples** for each language (*Algebra → SQL*, *Tuple calculus → SQL*,
+  *Domain calculus → SQL*), with the `CREATE TABLE` declarations they need,
+  including one unsafe formula that shows the refusal.
+
 ## Input methods
 
-- **Type** directly in the monospaced editor (live parsing, 250 ms debounce).
+- **Type** directly in the monospaced, syntax-coloured editor (live parsing, 250 ms debounce).
   A dismiss-keyboard button sits at the right of the accessory bar above the
   software keyboard, which matters on an iPhone where the keyboard covers most
   of the editor and has no hide key of its own.
@@ -323,6 +452,16 @@ SQLQuery ─┬─ RATranslator      (Translator/…)    → [RAStep] + RANode
                                                     └─ CalcRenderer   → set-builder text
 ```
 
+The reverse direction feeds the same pipeline. Every input becomes a
+`SQLQuery`, and everything to the right of `SQLQuery` above then runs as if SQL
+had been typed:
+
+```
+RA text   ─ RAParser   → RAScript ─ RAToSQL ───────────────┐
+TRC text  ─ CalcParser → CalcScript ─ CalcToSQL ───────────┼─► SQLQuery ─ SQLPrinter → SQL text
+DRC text  ─ CalcParser → CalcScript ─ DRCRaising → TRC ────┘      (SQLDialect: DuckDB | DataFusion)
+```
+
 The calculus translates from the **SQL AST**, not from `RANode`: by the time RA
 is built, predicates are flattened to strings and sub-queries erased to `(…)`,
 while SQL is very nearly sugar over TRC to begin with. The IR is shared, so
@@ -332,12 +471,13 @@ serve both.
 
 | Layer | Files |
 |-------|-------|
-| **Models** | `Models/SQLAST.swift`, `Models/RANode.swift`, `Models/CalcIR.swift`, `Models/Schema.swift`, `Models/CalcDiagnostic.swift` |
-| **Parser** | `Parser/Token.swift`, `Parser/Lexer.swift`, `Parser/SQLParser.swift` |
+| **Models** | `Models/SQLAST.swift`, `Models/RANode.swift`, `Models/RAExpr.swift`, `Models/CalcScript.swift`, `Models/CalcIR.swift`, `Models/Schema.swift`, `Models/CalcDiagnostic.swift` |
+| **Parser** | `Parser/Token.swift`, `Parser/Lexer.swift`, `Parser/SQLParser.swift`, `Parser/RAParser.swift`, `Parser/CalcParser.swift` |
 | **Translator** | `Translator/RATranslator.swift`, `RAStep.swift`, `ExpressionRendering.swift` |
 | **Calculus** | `Calculus/SchemaInference.swift`, `TRCTranslator.swift`, `DRCLowering.swift`, `CalcSimplifier.swift`, `SafetyChecker.swift`, `CalcRenderer.swift`, `ScopeTree.swift`, `CalcStep.swift`, `CalcTranslation.swift` |
-| **View model** | `ViewModel/AppViewModel.swift`, `ViewModel/SampleQueries.swift` |
-| **UI** | `App/…`, `Views/…` (editor, steps, formula, tree, calculus, compare, schema, banner) |
+| **Reverse translation** | `ReverseTranslation/RAToSQL.swift`, `CalcToSQL.swift`, `DRCRaising.swift`, `SQLDialect.swift`, `SQLPrinter.swift`, `SQLGeneration.swift`, `RAExprRendering.swift` |
+| **View model** | `ViewModel/AppViewModel.swift`, `ViewModel/SampleQueries.swift`, `ViewModel/SyntaxHighlighter.swift` |
+| **UI** | `App/…`, `Views/…` (editor with `HighlightingEditor`, steps, formula, tree, calculus, SQL, compare, schema, banner) |
 
 The lexer + parser + translator are **pure Swift with no UIKit/SwiftUI
 dependency**, which keeps them fully unit-testable (see `RelationalAlgebraTests`).
@@ -357,13 +497,12 @@ open RelationalAlgebra.xcodeproj
 No signing is required for the simulator. For a device, set your team under
 *Signing & Capabilities* (the bundle id is `com.relationalalgebra.RelationalAlgebra`).
 
-Debug builds compile whole-module rather than incrementally. Xcode 16.4's
-batch mode intermittently reports `error: circular reference` with no source
-location while compiling the calculus files, depending only on how it happens
-to partition the module into batches that run; the same sources type-check
-cleanly whole-module every time, and CI checks that on every push. Whole-module
-Debug builds cost a little rebuild time on a project this size and remove the
-flake entirely.
+Xcode 16.4's batch mode sometimes reports `error: circular reference`, with no
+source location, while compiling the calculus files. Whether it happens depends
+only on how Xcode splits the module into batches; the same sources type-check
+cleanly in whole-module mode every time. If you see it, build with
+`SWIFT_COMPILATION_MODE = wholemodule` under *Build Settings → Compilation Mode*
+for Debug. CI runs its tests that way on every push.
 
 ## Tests
 
@@ -385,6 +524,34 @@ simplification never changes what a formula denotes. Every other test checks the
 text of a formula, which catches a translation that changed but not one that was
 always wrong; this one can catch a formula that is well-formed, safe, renders
 beautifully and means something else.
+
+`ReverseTranslationTests` and `CalculusInputTests` cover the reverse
+direction:
+- parsing every spelling of every operator;
+- golden SQL for each case, for both engines;
+- round trips: SQL → RA → SQL and SQL → TRC → SQL must give the same query,
+  and every bundled sample is checked.
+
+`SyntaxHighlighterTests` checks what each word is coloured as, including in
+half-typed text.
+
+### Checking the SQL on real engines
+
+Text comparisons cannot show that generated SQL actually runs. The golden cases
+live in [`Fixtures/ra_to_sql.json`](Fixtures/ra_to_sql.json) and
+[`Fixtures/calc_to_sql.json`](Fixtures/calc_to_sql.json). Each file holds a small
+database and, for every case, the input, the expected SQL for each engine and
+the expected answer. The Swift tests compare the app's SQL with the fixtures, and
+[`scripts/check_engines.py`](scripts/check_engines.py) runs that same SQL on
+DuckDB and DataFusion and compares the rows each returns with the answer:
+
+```bash
+pip install duckdb datafusion
+python3 scripts/check_engines.py
+```
+
+CI runs it on every push as **SQL on DuckDB and DataFusion**, alongside the
+type-check and the `xcodebuild test` jobs.
 
 ## Notes & limitations
 
@@ -414,6 +581,17 @@ beautifully and means something else.
 - `NATURAL JOIN` equates every column the two sides share, so it depends on
   knowing what those columns are. With `CREATE TABLE` declarations it is exact;
   without them the shared set is inferred from the query and reported as such.
+- **Reverse translation**:
+  - Deep correlation on DataFusion is rewritten into a column-by-column join.
+    That needs the relation's columns, from `CREATE TABLE` or from the
+    columns the formula uses. A row whose column holds `NULL` never matches in
+    the rewritten join, so on data with NULLs the two engines can differ.
+  - The app's own SQL lexer reads a double-quoted identifier (`"order"`) as a
+    string. Generated SQL quotes only the names that need it.
+  - Domain-calculus aggregates that the app itself prints from SQL do not yet
+    read back: the forward DRC lowering of an aggregate comprehension leaves
+    behind an equation like `d = d`. Tuple-calculus aggregates read back
+    correctly.
 - Only the `SELECT` surface is translated. `CREATE TABLE` is parsed, but purely
   to declare column names and order for the domain calculus — nothing is
   executed, and the rest of DDL and all of DML are out of scope.
