@@ -68,6 +68,27 @@ struct RAToken: Equatable {
     var position: Int
     /// A double-quoted identifier — never read as an operator alias.
     var quoted: Bool = false
+
+    /// Written out rather than derived; see `RAExpr.==`.
+    static func == (lhs: RAToken, rhs: RAToken) -> Bool {
+        lhs.kind == rhs.kind && lhs.text == rhs.text
+            && lhs.position == rhs.position && lhs.quoted == rhs.quoted
+    }
+}
+
+extension RAToken.Kind {
+    static func == (lhs: RAToken.Kind, rhs: RAToken.Kind) -> Bool {
+        switch (lhs, rhs) {
+        case let (.unary(a), .unary(b)):   return a == b
+        case let (.binary(a), .binary(b)): return a == b
+        case (.identifier, .identifier), (.leftParen, .leftParen),
+             (.rightParen, .rightParen), (.subscriptText, .subscriptText), (.eof, .eof):
+            return true
+        case (.unary, _), (.binary, _), (.identifier, _), (.leftParen, _),
+             (.rightParen, _), (.subscriptText, _), (.eof, _):
+            return false
+        }
+    }
 }
 
 // MARK: - Lexer

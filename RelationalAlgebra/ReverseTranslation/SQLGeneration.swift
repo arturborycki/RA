@@ -16,6 +16,11 @@ struct SQLGeneration: Equatable {
     /// What the reader should know about how the SQL was produced. The same
     /// type the calculus uses, so one banner serves every direction.
     var diagnostics: [CalcDiagnostic]
+
+    /// Written out rather than derived; see `RAExpr.==`.
+    static func == (lhs: SQLGeneration, rhs: SQLGeneration) -> Bool {
+        lhs.text == rhs.text && lhs.query == rhs.query && lhs.diagnostics == rhs.diagnostics
+    }
 }
 
 /// A well-formed input that has no SQL translation, such as a self-join whose

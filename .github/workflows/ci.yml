@@ -49,7 +49,8 @@ jobs:
           probe "models"            $M/*.swift
           probe "models+parser"     $M/*.swift $P/*.swift
           probe "models+calculus"   $M/*.swift $P/*.swift $C/*.swift
-          probe "non-view sources"  $M/*.swift $P/*.swift $C/*.swift $T/*.swift $R/*.swift
+          probe "non-view sources"  $M/*.swift $P/*.swift $C/*.swift $T/*.swift
+          probe "+reverse"          $M/*.swift $P/*.swift $C/*.swift $T/*.swift $R/*.swift
           probe "whole app"         $(find RelationalAlgebra -name '*.swift')
 
   # The SQL the app generates must run on the engines people paste it into.

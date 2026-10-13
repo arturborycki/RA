@@ -41,10 +41,45 @@ indirect enum RAExpr: Equatable {
     case setOperation(SetOperator, left: RAExpr, right: RAExpr)
 }
 
+extension RAExpr {
+    /// Written out rather than derived, for the reason given on `CalcTerm.==`:
+    /// a synthesised `==` on a recursive enum is what the Xcode 16.4 frontend
+    /// walks into a "circular reference" on, with no source location. The
+    /// non-matching cases are listed rather than defaulted so a new case is a
+    /// compile error here instead of a silently unequal pair.
+    static func == (lhs: RAExpr, rhs: RAExpr) -> Bool {
+        switch (lhs, rhs) {
+        case let (.relation(a), .relation(b)):
+            return a == b
+        case let (.selection(aCond, aChild), .selection(bCond, bChild)):
+            return aCond == bCond && aChild == bChild
+        case let (.projection(aItems, aChild), .projection(bItems, bChild)):
+            return aItems == bItems && aChild == bChild
+        case let (.rename(aName, aCols, aChild), .rename(bName, bCols, bChild)):
+            return aName == bName && aCols == bCols && aChild == bChild
+        case let (.distinct(a), .distinct(b)):
+            return a == b
+        case let (.join(aKind, aCond, aLeft, aRight), .join(bKind, bCond, bLeft, bRight)):
+            return aKind == bKind && aCond == bCond && aLeft == bLeft && aRight == bRight
+        case let (.cross(aLeft, aRight), .cross(bLeft, bRight)):
+            return aLeft == bLeft && aRight == bRight
+        case let (.setOperation(aOp, aLeft, aRight), .setOperation(bOp, bLeft, bRight)):
+            return aOp == bOp && aLeft == bLeft && aRight == bRight
+        case (.relation, _), (.selection, _), (.projection, _), (.rename, _),
+             (.distinct, _), (.join, _), (.cross, _), (.setOperation, _):
+            return false
+        }
+    }
+}
+
 /// What the RA editor holds: optional table declarations, then one expression.
 struct RAScript: Equatable {
     var declarations: [TableDeclaration]
     var expression: RAExpr
+
+    static func == (lhs: RAScript, rhs: RAScript) -> Bool {
+        lhs.declarations == rhs.declarations && lhs.expression == rhs.expression
+    }
 }
 
 extension RAExpr {
