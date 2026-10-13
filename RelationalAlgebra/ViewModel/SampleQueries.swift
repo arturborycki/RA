@@ -22,7 +22,10 @@ struct SampleQuery: Identifiable, Hashable {
     /// has a real arity and column order to work from. Declared before `sql`
     /// so the memberwise initialiser reads in the order the editor shows them.
     var schema: String? = nil
+    /// The query text, written in `language` — SQL for most samples, but
+    /// relational algebra for the ones that show translation into SQL.
     let sql: String
+    var language: InputLanguage = .sql
 
     /// What actually goes into the editor.
     var text: String {
@@ -50,6 +53,100 @@ enum SampleQueries {
 
     /// Every bundled query, flattened — what the test suite runs over.
     static let all: [SampleQuery] = groups.flatMap(\.queries)
+
+    /// The examples offered when the editor holds relational algebra.
+    static let raGroups: [SampleGroup] = [raBasics]
+
+    static func groups(for language: InputLanguage) -> [SampleGroup] {
+        switch language {
+        case .sql: return groups
+        case .ra:  return raGroups
+        }
+    }
+
+    // MARK: - Relational algebra in, SQL out
+
+    static let universitySchema: String = """
+        CREATE TABLE Student (sid INT, name VARCHAR);
+        CREATE TABLE Course (cid INT, title VARCHAR);
+        CREATE TABLE Enrolled (sid INT, cid INT);
+        """
+
+    static let companySchema: String = """
+        CREATE TABLE Employee (id INT, name VARCHAR, salary INT, dept_id INT);
+        CREATE TABLE Department (id INT, name VARCHAR, location VARCHAR);
+        """
+
+    static let raBasics: SampleGroup = SampleGroup(
+        title: "Algebra → SQL",
+        note: "Type relational algebra; read the SQL it means.",
+        queries: [
+            SampleQuery(
+                title: "Select + project",
+                schema: companySchema,
+                sql: "π[name, salary] ( σ[salary > 50000] ( Employee ) )",
+                language: .ra),
+
+            SampleQuery(
+                title: "Typed with words",
+                schema: companySchema,
+                sql: "pi[name] ( sigma[salary > 50000 and dept_id = 1] ( Employee ) )",
+                language: .ra),
+
+            SampleQuery(
+                title: "Theta join with renames",
+                schema: companySchema,
+                sql: """
+                π[e.name, d.name → department] (
+                    ρ[e](Employee) ⋈[e.dept_id = d.id] σ[d.location = 'Berlin'](ρ[d](Department))
+                )
+                """,
+                language: .ra),
+
+            SampleQuery(
+                title: "Product, then select",
+                schema: universitySchema,
+                sql: """
+                π[Student.name] (
+                    σ[Student.sid = Enrolled.sid ∧ Enrolled.cid = 10] ( Student × Enrolled )
+                )
+                """,
+                language: .ra),
+
+            SampleQuery(
+                title: "Natural join",
+                schema: universitySchema,
+                sql: "π[name, title] ( Student ⋈ Enrolled ⋈ Course )",
+                language: .ra),
+
+            SampleQuery(
+                title: "Difference: never enrolled",
+                schema: universitySchema,
+                sql: "π[name] ( Student ⋈ ( π[sid](Student) − π[sid](Enrolled) ) )",
+                language: .ra),
+
+            SampleQuery(
+                title: "Union",
+                schema: companySchema,
+                sql: "π[name](σ[dept_id = 1](Employee)) ∪ π[name](σ[salary > 65000](Employee))",
+                language: .ra),
+
+            SampleQuery(
+                title: "Self-join via ρ",
+                schema: universitySchema,
+                sql: """
+                π[s1, s2] (
+                    σ[s1 < s2] ( ρ[A(s1, c1)](Enrolled) ⋈[c1 = c2] ρ[B(s2, c2)](Enrolled) )
+                )
+                """,
+                language: .ra),
+
+            SampleQuery(
+                title: "Left outer join",
+                schema: companySchema,
+                sql: "π[Employee.name, location] ( Employee ⟕[dept_id = Department.id] Department )",
+                language: .ra),
+        ])
 
     // MARK: - Basics
 

@@ -2,9 +2,14 @@
 //  AppViewModel.swift
 //  RelationalAlgebra
 //
-//  Owns the editable SQL text and derives every notation from it. Parsing runs
+//  Owns the editable text and derives every notation from it. Parsing runs
 //  automatically (debounced) whenever the text changes; the query is parsed once
 //  and translated into each notation from the same AST.
+//
+//  The input need not be SQL. Relational algebra typed into the editor is
+//  translated *into* SQL first, and that SQL then runs through the very same
+//  pipeline — so every notation the app can show is available whatever the
+//  user typed, and SQL is the one hub every direction passes through.
 //
 
 import Foundation
@@ -19,13 +24,69 @@ struct TranslationBundle {
     var trc: CalcTranslation
     var drc: CalcTranslation
     var schema: QuerySchema
+    /// The SQL the input was translated into, or `nil` when the input *is* SQL.
+    var sql: SQLGeneration? = nil
+}
+
+/// What the editor holds.
+enum InputLanguage: String, CaseIterable, Identifiable {
+    case sql = "SQL"
+    case ra = "RA"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .sql: return "SQL"
+        case .ra:  return "Relational Algebra"
+        }
+    }
+
+    var placeholder: String {
+        switch self {
+        case .sql: return "Type, paste, or import a SQL query…"
+        case .ra:  return "Type relational algebra, e.g. π[name](σ[salary > 50000](Employee)) " +
+                          "— or with words: pi[name](sigma[salary > 50000](Employee))"
+        }
+    }
 }
 
 @MainActor
 final class AppViewModel: ObservableObject {
 
     @Published var sqlText: String = SampleQueries.all[0].text {
-        didSet { scheduleParse() }
+        didSet { if inputLanguage == .sql { scheduleParse() } }
+    }
+
+    /// The relational-algebra buffer. Each language keeps its own text, so
+    /// switching back and forth never destroys anything.
+    @Published var raText: String = SampleQueries.raBasics.queries[0].text {
+        didSet { if inputLanguage == .ra { scheduleParse() } }
+    }
+
+    @Published var inputLanguage: InputLanguage {
+        didSet {
+            UserDefaults.standard.set(inputLanguage.rawValue, forKey: Self.inputLanguageKey)
+            parseNow()
+        }
+    }
+
+    private static let inputLanguageKey = "inputLanguage"
+
+    /// The text of whichever language is being edited.
+    var text: String {
+        get {
+            switch inputLanguage {
+            case .sql: return sqlText
+            case .ra:  return raText
+            }
+        }
+        set {
+            switch inputLanguage {
+            case .sql: sqlText = newValue
+            case .ra:  raText = newValue
+            }
+        }
     }
 
     /// Everything derived from the current text, if it parses.
@@ -38,6 +99,8 @@ final class AppViewModel: ObservableObject {
     private var parseTask: Task<Void, Never>?
 
     init() {
+        let stored = UserDefaults.standard.string(forKey: Self.inputLanguageKey)
+        inputLanguage = stored.flatMap(InputLanguage.init(rawValue:)) ?? .sql
         parseNow()
     }
 
@@ -55,7 +118,7 @@ final class AppViewModel: ObservableObject {
     /// reads `result` directly because it shows all three at once.
     func calculus(_ notation: Notation) -> CalcTranslation? {
         switch notation {
-        case .ra, .compare: return nil
+        case .sql, .ra, .compare: return nil
         case .trc:          return trc
         case .drc:          return drc
         }
@@ -77,11 +140,23 @@ final class AppViewModel: ObservableObject {
     func load(sample: SampleQuery) {
         // `text`, not `sql`: a sample that carries table declarations loads them
         // too, which is what makes its domain-calculus atoms exact.
-        sqlText = sample.text
+        switch sample.language {
+        case .sql: sqlText = sample.text
+        case .ra:  raText = sample.text
+        }
+        inputLanguage = sample.language
     }
 
     func replaceText(_ text: String) {
-        sqlText = text
+        self.text = text
+    }
+
+    /// Carry the generated SQL into the SQL editor, which is the round trip
+    /// made one tap: edit it there and watch the algebra follow.
+    func editGeneratedSQL() {
+        guard let generated = result?.sql else { return }
+        sqlText = generated.text
+        inputLanguage = .sql
     }
 
     // MARK: - Parsing
@@ -97,11 +172,11 @@ final class AppViewModel: ObservableObject {
 
     /// Whether the editor is empty (ignoring whitespace).
     var isEmpty: Bool {
-        sqlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     func parseNow() {
-        let text = sqlText
+        let text = self.text
         // An empty editor is not an error — just show empty results.
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             result = nil
@@ -110,8 +185,12 @@ final class AppViewModel: ObservableObject {
             return
         }
         do {
-            let script = try SQLParser.parseScript(text)
-            result = AppViewModel.translate(script)
+            switch inputLanguage {
+            case .sql:
+                result = AppViewModel.translate(try SQLParser.parseScript(text))
+            case .ra:
+                result = try AppViewModel.translate(ra: try RAParser.parseScript(text))
+            }
             errorMessage = nil
             errorPosition = nil
         } catch let error as ParseError {
@@ -127,6 +206,17 @@ final class AppViewModel: ObservableObject {
             errorMessage = error.localizedDescription
             errorPosition = nil
         }
+    }
+
+    /// Relational algebra in: translate it to SQL, then run that SQL through the
+    /// ordinary pipeline. The declarations travel along, so a schema typed above
+    /// the algebra makes the domain calculus exact just as it does for SQL.
+    nonisolated static func translate(ra script: RAScript) throws -> TranslationBundle {
+        let generated = try RAToSQL.translate(script.expression)
+        var bundle = translate(SQLScript(declarations: script.declarations,
+                                         query: generated.query))
+        bundle.sql = generated
+        return bundle
     }
 
     /// The whole translation pipeline, as a pure function.

@@ -45,6 +45,33 @@ final class SQLParser {
         return SQLScript(declarations: declarations, query: query)
     }
 
+    /// Lex + parse a buffer holding only `CREATE TABLE` statements — the schema
+    /// prelude above a relational-algebra expression.
+    static func parseDeclarations(_ source: String) throws -> [TableDeclaration] {
+        let tokens = try Lexer(source).tokenize()
+        let parser = SQLParser(tokens: tokens)
+        let declarations = try parser.parseTableDeclarations()
+        try parser.expectEnd()
+        return declarations
+    }
+
+    /// One condition on its own, such as the subscript of `σ[…]` or `⋈[…]`.
+    /// Positions in a thrown error are relative to `source`.
+    static func parseStandaloneExpression(_ source: String) throws -> Expression {
+        let parser = SQLParser(tokens: try Lexer(source).tokenize())
+        let expression = try parser.parseExpression()
+        try parser.expectEnd()
+        return expression
+    }
+
+    /// A comma-separated `SELECT` list on its own, such as the subscript of `π[…]`.
+    static func parseStandaloneSelectList(_ source: String) throws -> [SelectItem] {
+        let parser = SQLParser(tokens: try Lexer(source).tokenize())
+        let items = try parser.parseSelectList()
+        try parser.expectEnd()
+        return items
+    }
+
     // MARK: - CREATE TABLE
 
     private func parseTableDeclarations() throws -> [TableDeclaration] {
@@ -225,7 +252,8 @@ final class SQLParser {
         if check(kind: .leftParen) {
             let save = index
             _ = advance()
-            if checkKeyword("SELECT") {
+            // `((SELECT …) EXCEPT …) UNION …` nests, and so may a WITH.
+            if checkKeyword("SELECT") || checkKeyword("WITH") || check(kind: .leftParen) {
                 let inner = try parseQuery()
                 _ = try expect(kind: .rightParen, "')'")
                 return inner

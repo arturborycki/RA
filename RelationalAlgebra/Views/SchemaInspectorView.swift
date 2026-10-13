@@ -92,7 +92,7 @@ struct SchemaInspectorView: View {
     }
 
     private func insertTemplate() {
-        viewModel.replaceText(templateHint + "\n\n" + viewModel.sqlText)
+        viewModel.replaceText(templateHint + "\n\n" + viewModel.text)
         dismiss()
     }
 }

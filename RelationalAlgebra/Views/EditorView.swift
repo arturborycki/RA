@@ -2,8 +2,9 @@
 //  EditorView.swift
 //  RelationalAlgebra
 //
-//  The SQL input surface. Supports typing, pasting from the clipboard, and
-//  importing a `.sql` (or plain text) file via the document picker.
+//  The input surface. Holds SQL or relational algebra — a picker at the top
+//  switches between them, each with its own buffer — and supports typing,
+//  pasting from the clipboard, and importing a `.sql` (or plain text) file.
 //
 
 import SwiftUI
@@ -20,6 +21,16 @@ struct EditorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            Picker("Input", selection: $viewModel.inputLanguage) {
+                ForEach(InputLanguage.allCases) { language in
+                    Text(language.rawValue).tag(language)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(.systemGroupedBackground))
+            Divider()
             editor
             Divider()
             statusBar
@@ -46,15 +57,15 @@ struct EditorView: View {
 
     private var editor: some View {
         ZStack(alignment: .topLeading) {
-            if viewModel.sqlText.isEmpty {
-                Text("Type, paste, or import a SQL query…")
+            if viewModel.text.isEmpty {
+                Text(viewModel.inputLanguage.placeholder)
                     .foregroundStyle(.secondary)
                     .font(.system(.body, design: .monospaced))
                     .padding(.horizontal, 20)
                     .padding(.vertical, 16)
                     .allowsHitTesting(false)
             }
-            TextEditor(text: $viewModel.sqlText)
+            TextEditor(text: $viewModel.text)
                 .font(.system(.body, design: .monospaced))
                 .autocorrectionDisabled(true)
                 .textInputAutocapitalization(.never)
@@ -97,7 +108,7 @@ struct EditorView: View {
                     .foregroundStyle(.red)
             }
             Spacer()
-            Text("\(lineCount) lines · \(viewModel.sqlText.count) chars")
+            Text("\(lineCount) lines · \(viewModel.text.count) chars")
                 .foregroundStyle(.secondary)
         }
         .font(.caption)
@@ -107,7 +118,7 @@ struct EditorView: View {
     }
 
     private var lineCount: Int {
-        viewModel.sqlText.isEmpty ? 0 : viewModel.sqlText.split(separator: "\n", omittingEmptySubsequences: false).count
+        viewModel.text.isEmpty ? 0 : viewModel.text.split(separator: "\n", omittingEmptySubsequences: false).count
     }
 
     // MARK: Toolbar
@@ -133,7 +144,7 @@ struct EditorView: View {
 
     private var examplesMenu: some View {
         Menu {
-            ForEach(SampleQueries.groups) { group in
+            ForEach(SampleQueries.groups(for: viewModel.inputLanguage)) { group in
                 Menu {
                     Section(group.note) {
                         ForEach(group.queries) { sample in

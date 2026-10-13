@@ -385,7 +385,6 @@ engine accepts them:
 
 | Avoid | Emit instead | Why |
 |---|---|---|
-| `WITH S(x, y) AS (…)` (CTE column list) | `WITH S AS (SELECT a AS x, b AS y …)` | Column-list CTEs are the least uniformly supported CTE form; aliasing inside the body works everywhere |
 | `NATURAL JOIN` | `JOIN … USING (shared columns)` when the schema is declared | `USING` is supported by both; `NATURAL JOIN` is emitted only without a schema, with a diagnostic |
 | Un-aliased derived table | always `(…) AS t` | Some engines require the alias and none reject it |
 | Relying on default null ordering | explicit `NULLS FIRST/LAST` whenever the input says which | Engines differ on whether `DESC` puts nulls first |
@@ -395,11 +394,18 @@ engine accepts them:
 | Concern | DuckDB | DataFusion |
 |---|---|---|
 | Integer division in a user expression (`a / b`) | `/` is fractional; `//` is integer division | `/` on integers is integer division |
-| Nested correlation (a sub-query referring two scopes out, as division's double `NOT EXISTS` and nested `∀` do) | emitted as is | **to verify in the P0 spike.** If unsupported, emit the uncorrelated form (below) |
+| Nested correlation (a sub-query referring two scopes out, as division's double `NOT EXISTS` and nested `∀` do) | emitted as is | **rejected** (`No field named r.a`, verified on DataFusion 55); emit the uncorrelated form (below) |
 | Identifier case | case-insensitive, case-preserving | unquoted identifiers are lower-cased, so mixed-case names in a declared schema are quoted |
 
 For `/`, the printer keeps the user's operator and adds an `info` diagnostic that the two
 engines disagree on integer operands. It does not silently rewrite arithmetic.
+
+**Verified, not assumed.** A probe against DuckDB 1.5 and DataFusion 55 settled these:
+`NATURAL JOIN`, `USING`, CTE column lists (`WITH S(x, y) AS …`), derived-table column
+aliases, and parenthesised set-operation operands all run on both engines. Two forms fail
+on DataFusion only: nested correlation, as above, and `FROM a, b JOIN c ON <mentions a>`,
+because `JOIN` binds tighter than the comma. The RA translator therefore turns a comma list
+into `CROSS JOIN`s before it appends a `JOIN`.
 
 **Uncorrelated fallbacks.** Division and `∀` each have a standard form that needs no
 correlated sub-query:
@@ -598,6 +604,20 @@ CI type-check probes in `ci.yml` gain a `ReverseTranslation` layer.
 ---
 
 ## 12. Phasing
+
+> **P0 as built** (branch `claude/reverse-translation-p0`) differs from the table below in
+> three ways, each decided during implementation:
+>
+> - **No separate faithful stage.** One `SELECT` per operator breaks qualified names: once
+>   `Employee e ⋈ Department d` is wrapped in a derived table, `e.salary` no longer resolves.
+>   So the translator builds open blocks that σ and joins extend, and only π, δ and set
+>   operations close them (§5.2 in effect, from the start). The Steps view's per-operator
+>   cards are still to come.
+> - **No dialect setting yet.** Every P0 construct prints identically for both engines, and
+>   CI proves it by running every golden case on both. The setting arrives with the first
+>   construct whose output must differ (division, nested `∀`). Until then, integer division
+>   gets a diagnostic.
+> - **`ρ[S(a, b)]` is in P0.** It becomes a CTE with a column list, which both engines run.
 
 | Phase | Content | Ships |
 |---|---|---|
