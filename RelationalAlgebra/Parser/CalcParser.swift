@@ -27,6 +27,9 @@ import Foundation
 
 // MARK: - Tokens
 
+/// Flat — no case holds another token — so the derived `==` is cheap; the
+/// hand-written form the recursive IR types need made the exhaustiveness
+/// check here too slow for the compiler.
 enum CalcTokenKind: Equatable {
     case identifier, number, string
     case leftBrace, rightBrace, bar, leftParen, rightParen, comma, dot
@@ -49,32 +52,6 @@ struct CalcToken: Equatable {
 
     static func == (lhs: CalcToken, rhs: CalcToken) -> Bool {
         lhs.kind == rhs.kind && lhs.text == rhs.text && lhs.position == rhs.position
-    }
-}
-
-extension CalcTokenKind {
-    /// Written out rather than derived; see `RAExpr.==`.
-    static func == (lhs: CalcTokenKind, rhs: CalcTokenKind) -> Bool {
-        switch (lhs, rhs) {
-        case let (.comparison(a), .comparison(b)), let (.arithmetic(a), .arithmetic(b)):
-            return a == b
-        case let (.setOperator(a), .setOperator(b)):
-            return a == b
-        case (.identifier, .identifier), (.number, .number), (.string, .string),
-             (.leftBrace, .leftBrace), (.rightBrace, .rightBrace), (.bar, .bar),
-             (.leftParen, .leftParen), (.rightParen, .rightParen), (.comma, .comma),
-             (.dot, .dot), (.leftAngle, .leftAngle), (.rightAngle, .rightAngle),
-             (.and, .and), (.or, .or), (.not, .not), (.arrow, .arrow),
-             (.exists, .exists), (.forAll, .forAll), (.member, .member),
-             (.ellipsis, .ellipsis), (.semicolon, .semicolon), (.eof, .eof):
-            return true
-        case (.identifier, _), (.number, _), (.string, _), (.leftBrace, _), (.rightBrace, _),
-             (.bar, _), (.leftParen, _), (.rightParen, _), (.comma, _), (.dot, _),
-             (.leftAngle, _), (.rightAngle, _), (.and, _), (.or, _), (.not, _), (.arrow, _),
-             (.exists, _), (.forAll, _), (.member, _), (.comparison, _), (.arithmetic, _),
-             (.ellipsis, _), (.setOperator, _), (.semicolon, _), (.eof, _):
-            return false
-        }
     }
 }
 
