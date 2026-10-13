@@ -37,8 +37,10 @@ final class ReverseTranslationTests: XCTestCase {
         return try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
     }
 
+    /// The whole script — declarations and assignments too, not just the
+    /// final expression.
     private func sql(_ ra: String) throws -> SQLGeneration {
-        try RAToSQL.translate(RAParser.parse(ra))
+        try RAToSQL.translate(RAParser.parseScript(ra))
     }
 
     // MARK: - Golden SQL
