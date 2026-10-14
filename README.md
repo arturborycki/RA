@@ -588,10 +588,6 @@ type-check and the `xcodebuild test` jobs.
     the rewritten join, so on data with NULLs the two engines can differ.
   - The app's own SQL lexer reads a double-quoted identifier (`"order"`) as a
     string. Generated SQL quotes only the names that need it.
-  - Domain-calculus aggregates that the app itself prints from SQL do not yet
-    read back: the forward DRC lowering of an aggregate comprehension leaves
-    behind an equation like `d = d`. Tuple-calculus aggregates read back
-    correctly.
 - Only the `SELECT` surface is translated. `CREATE TABLE` is parsed, but purely
   to declare column names and order for the domain calculus — nothing is
   executed, and the rest of DDL and all of DML are out of scope.

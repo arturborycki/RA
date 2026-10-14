@@ -712,6 +712,72 @@ final class CalculusTests: XCTestCase {
         XCTAssertTrue(text.contains("Orders(o, c)"), text)
     }
 
+    func testAggregateComprehensionGetsColumnsOfItsOwn() throws {
+        // The tuple form re-binds the outer `e` inside COUNT{ e | … }, and names
+        // the group variable `d` — the letter dept_id's column would get too.
+        let lowered = try lowerToDRC("""
+            CREATE TABLE Employee (name TEXT, salary INT, dept_id INT);
+            SELECT dept_id, COUNT(*) AS n FROM Employee GROUP BY dept_id
+            """)
+        let text = CalcRenderer().inline(lowered)
+        guard case let .query(query) = lowered.root,
+              case let .variable(group)? = query.result.first?.term
+        else { return XCTFail(text) }
+
+        var comprehensions: [(variables: [CalcVar], condition: CalcFormula)] = []
+        var outside = Set<CalcVar>()
+        var selfComparisons: [CalcFormula] = []
+        func visit(_ formula: CalcFormula, inComprehension: Bool) {
+            if !inComprehension { outside.formUnion(Self.variablesOutsideComprehensions(formula)) }
+            switch formula {
+            case let .comparison(lhs, _, rhs) where lhs == rhs:
+                selfComparisons.append(formula)
+            case let .and(parts), let .or(parts):
+                parts.forEach { visit($0, inComprehension: inComprehension) }
+            case let .not(inner), let .exists(_, inner), let .forAll(_, inner):
+                visit(inner, inComprehension: inComprehension)
+            case let .implies(lhs, rhs):
+                visit(lhs, inComprehension: inComprehension)
+                visit(rhs, inComprehension: inComprehension)
+            case let .aggregateBinding(_, _, _, _, variables, condition):
+                comprehensions.append((variables, condition))
+                visit(condition, inComprehension: true)
+            default:
+                break
+            }
+        }
+        visit(query.formula, inComprehension: false)
+
+        XCTAssertTrue(selfComparisons.isEmpty, text)
+        XCTAssertEqual(comprehensions.count, 1, text)
+        for comprehension in comprehensions {
+            XCTAssertFalse(comprehension.variables.isEmpty, text)
+            XCTAssertTrue(outside.isDisjoint(with: comprehension.variables), text)
+            // Correlated to the group it counts.
+            XCTAssertTrue(comprehension.condition.freeVariables
+                            .subtracting(comprehension.variables).contains(group), text)
+        }
+    }
+
+    /// The variables a formula mentions, not counting inside aggregate
+    /// comprehensions (only each one's result variable).
+    private static func variablesOutsideComprehensions(_ formula: CalcFormula) -> Set<CalcVar> {
+        switch formula {
+        case let .aggregateBinding(result, _, _, _, _, _):
+            return [result]
+        case let .and(parts), let .or(parts):
+            return parts.reduce(into: Set()) { $0.formUnion(variablesOutsideComprehensions($1)) }
+        case let .not(inner):
+            return variablesOutsideComprehensions(inner)
+        case let .exists(vars, body), let .forAll(vars, body):
+            return variablesOutsideComprehensions(body).union(vars)
+        case let .implies(lhs, rhs):
+            return variablesOutsideComprehensions(lhs).union(variablesOutsideComprehensions(rhs))
+        default:
+            return formula.variables
+        }
+    }
+
     func testLoweredQueriesAreSafe() throws {
         for sample in SampleQueries.all {
             let lowered = try lowerToDRC(sample.text)

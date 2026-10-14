@@ -24,6 +24,11 @@ struct DRCLowering {
 
     static func lower(_ translation: CalcTranslation) -> CalcTranslation {
         let engine = DRCLoweringEngine(schema: translation.schema)
+        // Group and aggregate variables keep their names through the lowering,
+        // so the column variables must be named around them.
+        for expression in translation.definitions.map(\.expression) + [translation.root] {
+            engine.reserveValueVariables(of: expression)
+        }
 
         // One engine across the whole translation, so a domain variable name is
         // never reused between a CTE and the body that references it.
@@ -63,12 +68,57 @@ final class DRCLoweringEngine {
     }
 
     private let schema: QuerySchema
+    /// The mapping in force for each tuple variable at the current point of
+    /// the walk; a binder that re-binds a variable shadows it for its body.
     private var mappings: [CalcVar: TupleMapping] = [:]
+    /// Every mapping made, shadowed ones included, for the step description.
+    private var allMappings: [TupleMapping] = []
     private var usedNames = Set<String>()
     private(set) var diagnostics: [CalcDiagnostic] = []
 
     init(schema: QuerySchema) {
         self.schema = schema
+    }
+
+    /// Keep the names of the formula's value variables — `d` for a grouped
+    /// `dept_id`, `headcount` for a COUNT — away from the column variables.
+    ///
+    /// Those variables pass through the lowering unchanged, while a tuple
+    /// variable's columns get fresh mnemonic names. Without this, `e.dept_id`
+    /// would become `d` as well, and `e.dept_id = d` the vacuous `d = d`.
+    func reserveValueVariables(of expression: CalcExpression) {
+        switch expression {
+        case let .query(query):
+            var tuples = Set<CalcVar>()
+            DRCLoweringEngine.collectTupleVariables(of: query.formula, into: &tuples)
+            var all = query.formula.variables
+            for column in query.result { all.formUnion(column.term.variables) }
+            for variable in all where !tuples.contains(variable) {
+                usedNames.insert(variable.name)
+            }
+        case let .setOperation(_, left, right):
+            reserveValueVariables(of: left)
+            reserveValueVariables(of: right)
+        }
+    }
+
+    /// The tuple variables: those a relation atom introduces as its only term.
+    private static func collectTupleVariables(of formula: CalcFormula, into tuples: inout Set<CalcVar>) {
+        switch formula {
+        case let .relationAtom(_, terms, _):
+            if terms.count == 1, case let .variable(tuple) = terms[0] { tuples.insert(tuple) }
+        case let .and(parts), let .or(parts):
+            parts.forEach { collectTupleVariables(of: $0, into: &tuples) }
+        case let .not(inner), let .exists(_, inner), let .forAll(_, inner):
+            collectTupleVariables(of: inner, into: &tuples)
+        case let .implies(lhs, rhs):
+            collectTupleVariables(of: lhs, into: &tuples)
+            collectTupleVariables(of: rhs, into: &tuples)
+        case let .aggregateBinding(_, _, _, _, _, condition):
+            collectTupleVariables(of: condition, into: &tuples)
+        case .comparison, .predicate, .constant:
+            break
+        }
     }
 
     // MARK: - Expressions
@@ -143,12 +193,12 @@ final class DRCLoweringEngine {
         case let .exists(vars, body):
             // Lower the body first: the atoms inside it are what establish each
             // tuple variable's mapping.
-            let loweredBody = lower(body)
-            return .exists(domainVariables(of: vars), loweredBody)
+            let (loweredBody, bound) = scoped(vars) { lower(body) }
+            return .exists(bound, loweredBody)
 
         case let .forAll(vars, body):
-            let loweredBody = lower(body)
-            return .forAll(domainVariables(of: vars), loweredBody)
+            let (loweredBody, bound) = scoped(vars) { lower(body) }
+            return .forAll(bound, loweredBody)
 
         case let .implies(lhs, rhs):
             return .implies(lower(lhs), lower(rhs))
@@ -158,11 +208,17 @@ final class DRCLoweringEngine {
 
         case let .aggregateBinding(result, function, distinct, element, variables, condition):
             // Condition first: its atoms establish the tuple variables that the
-            // collected element and the variable list then refer to.
-            let loweredCondition = lower(condition)
+            // collected element and the variable list then refer to. The tuple
+            // translation re-uses the outer query's variable for the group's
+            // rows, so the comprehension is a scope of its own: the same `e`
+            // inside it ranges afresh, over columns of its own.
+            let ((loweredCondition, loweredElement), bound) = scoped(variables) {
+                () -> (CalcFormula, CalcTerm?) in
+                (lower(condition), element.map { lower($0) })
+            }
             return .aggregateBinding(result: result, function: function, distinct: distinct,
-                                     element: element.map { lower($0) },
-                                     variables: domainVariables(of: variables),
+                                     element: loweredElement,
+                                     variables: bound,
                                      condition: loweredCondition)
 
         case .constant:
@@ -240,6 +296,7 @@ final class DRCLoweringEngine {
         let mapping = TupleMapping(relation: relation, attributes: attributes,
                                    variables: variables, complete: complete)
         mappings[tuple] = mapping
+        allMappings.append(mapping)
         return mapping
     }
 
@@ -247,6 +304,21 @@ final class DRCLoweringEngine {
     /// column order. A variable with no mapping is passed through unchanged.
     private func domainVariables(of tuples: [CalcVar]) -> [CalcVar] {
         tuples.flatMap { mappings[$0]?.variables ?? [$0] }
+    }
+
+    /// Lower the body of a binder of `tuples`, and the domain variables it binds.
+    ///
+    /// A tuple variable that already has a mapping is being re-bound, so the
+    /// body gets columns of its own and the outer mapping comes back after it.
+    /// One bound here for the first time keeps its mapping, as before.
+    private func scoped<Body>(_ tuples: [CalcVar], _ lowerBody: () -> Body) -> (Body, [CalcVar]) {
+        let shadowed = tuples.reduce(into: [CalcVar: TupleMapping]()) { saved, tuple in
+            saved[tuple] = mappings.removeValue(forKey: tuple)
+        }
+        let body = lowerBody()
+        let bound = domainVariables(of: tuples)
+        for (tuple, mapping) in shadowed { mappings[tuple] = mapping }
+        return (body, bound)
     }
 
     /// The part of each column name its mnemonic letter is taken from.
@@ -349,7 +421,7 @@ final class DRCLoweringEngine {
     /// at once. Showing it as a single step with the mapping spelled out says
     /// more than five near-identical formulas would.
     func steps(for root: CalcExpression) -> [CalcStep] {
-        let described = mappings.values
+        let described = allMappings
             .sorted { $0.relation.lowercased() < $1.relation.lowercased() }
             .map { mapping in
                 "\(mapping.relation)(" + mapping.variables.map(\.name).joined(separator: ", ")
