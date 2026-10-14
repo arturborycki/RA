@@ -45,6 +45,41 @@ final class SQLParser {
         return SQLScript(declarations: declarations, query: query)
     }
 
+    /// Lex + parse a buffer holding only `CREATE TABLE` statements — the schema
+    /// prelude above a relational-algebra expression.
+    static func parseDeclarations(_ source: String) throws -> [TableDeclaration] {
+        let tokens = try Lexer(source).tokenize()
+        let parser = SQLParser(tokens: tokens)
+        let declarations = try parser.parseTableDeclarations()
+        try parser.expectEnd()
+        return declarations
+    }
+
+    /// One condition on its own, such as the subscript of `σ[…]` or `⋈[…]`.
+    /// Positions in a thrown error are relative to `source`.
+    static func parseStandaloneExpression(_ source: String) throws -> Expression {
+        let parser = SQLParser(tokens: try Lexer(source).tokenize())
+        let expression = try parser.parseExpression()
+        try parser.expectEnd()
+        return expression
+    }
+
+    /// A comma-separated `SELECT` list on its own, such as the subscript of `π[…]`.
+    static func parseStandaloneSelectList(_ source: String) throws -> [SelectItem] {
+        let parser = SQLParser(tokens: try Lexer(source).tokenize())
+        let items = try parser.parseSelectList()
+        try parser.expectEnd()
+        return items
+    }
+
+    /// A comma-separated `ORDER BY` list on its own, such as the subscript of `τ[…]`.
+    static func parseStandaloneOrderList(_ source: String) throws -> [OrderItem] {
+        let parser = SQLParser(tokens: try Lexer(source).tokenize())
+        let items = try parser.parseOrderList()
+        try parser.expectEnd()
+        return items
+    }
+
     // MARK: - CREATE TABLE
 
     private func parseTableDeclarations() throws -> [TableDeclaration] {
@@ -225,7 +260,8 @@ final class SQLParser {
         if check(kind: .leftParen) {
             let save = index
             _ = advance()
-            if checkKeyword("SELECT") {
+            // `((SELECT …) EXCEPT …) UNION …` nests, and so may a WITH.
+            if checkKeyword("SELECT") || checkKeyword("WITH") || check(kind: .leftParen) {
                 let inner = try parseQuery()
                 _ = try expect(kind: .rightParen, "')'")
                 return inner
@@ -397,11 +433,18 @@ final class SQLParser {
         if matchKeyword("AS") {
             return try expect(kind: .identifier, "an alias name").text
         }
-        if check(kind: .identifier) {
+        // A contextual clause word is not an alias: in `FROM R NATURAL JOIN S`
+        // taking NATURAL as R's alias would quietly turn the natural join into
+        // an inner join with no condition.
+        if check(kind: .identifier),
+           !SQLParser.clauseWords.contains(current.text.uppercased()) {
             return advance().text
         }
         return nil
     }
+
+    /// Identifiers that may follow a table reference as the start of a clause.
+    private static let clauseWords: Set<String> = ["NATURAL", "OFFSET", "FETCH"]
 
     private func parseJoins() throws -> [Join] {
         var joins: [Join] = []

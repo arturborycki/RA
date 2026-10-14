@@ -20,6 +20,16 @@ struct CompareView: View {
         if let result = viewModel.result {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    // When the input was not SQL, the SQL is a notation too —
+                    // and the one the other three were derived from.
+                    if let sql = result.sql {
+                        ComparePane(
+                            title: "SQL",
+                            subtitle: "What the algebra means, as a query to run.",
+                            text: sql.text,
+                            exports: [("SQL", sql.text)])
+                    }
+
                     ComparePane(
                         title: "Relational algebra",
                         subtitle: "Operators applied to relations — how to compute the answer.",

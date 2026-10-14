@@ -2,8 +2,9 @@
 //  EditorView.swift
 //  RelationalAlgebra
 //
-//  The SQL input surface. Supports typing, pasting from the clipboard, and
-//  importing a `.sql` (or plain text) file via the document picker.
+//  The input surface. Holds SQL or relational algebra — a picker at the top
+//  switches between them, each with its own buffer — and supports typing,
+//  pasting from the clipboard, and importing a `.sql` (or plain text) file.
 //
 
 import SwiftUI
@@ -15,11 +16,20 @@ struct EditorView: View {
     @State private var showImporter = false
     @State private var showSchema = false
     @State private var importError: String?
-    @FocusState private var editorFocused: Bool
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
         VStack(spacing: 0) {
+            Picker("Input", selection: $viewModel.inputLanguage) {
+                ForEach(InputLanguage.allCases) { language in
+                    Text(language.rawValue).tag(language)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(.systemGroupedBackground))
+            Divider()
             editor
             Divider()
             statusBar
@@ -46,40 +56,30 @@ struct EditorView: View {
 
     private var editor: some View {
         ZStack(alignment: .topLeading) {
-            if viewModel.sqlText.isEmpty {
-                Text("Type, paste, or import a SQL query…")
+            HighlightingEditor(text: $viewModel.text,
+                               language: viewModel.inputLanguage,
+                               errorOffset: errorOffset,
+                               symbols: SymbolBar.symbols(for: viewModel.inputLanguage))
+            if viewModel.text.isEmpty {
+                // Over the text view, inset to where its first character goes.
+                Text(viewModel.inputLanguage.placeholder)
                     .foregroundStyle(.secondary)
                     .font(.system(.body, design: .monospaced))
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, 17)
                     .padding(.vertical, 16)
                     .allowsHitTesting(false)
             }
-            TextEditor(text: $viewModel.sqlText)
-                .font(.system(.body, design: .monospaced))
-                .autocorrectionDisabled(true)
-                .textInputAutocapitalization(.never)
-                .focused($editorFocused)
-                .padding(12)
-                .scrollContentBackground(.hidden)
-                .background(Color(.secondarySystemGroupedBackground))
-                // On the text editor itself, not in the screen's toolbar
-                // builder alongside the primary-action group: a keyboard group
-                // sharing a builder with other placements does not reliably
-                // reach the accessory bar. The iPhone keyboard covers most of
-                // the editor and has no hide key of its own, so this is the
-                // only way back out of it.
-                .toolbar {
-                    ToolbarItemGroup(placement: .keyboard) {
-                        Spacer()
-                        Button {
-                            editorFocused = false
-                        } label: {
-                            Image(systemName: "keyboard.chevron.compact.down")
-                        }
-                        .accessibilityLabel("Hide keyboard")
-                    }
-                }
         }
+        .background(Color(.secondarySystemGroupedBackground))
+    }
+
+    /// Where the parse error is, as an offset into the editor's text. The SQL
+    /// parser counts from the first non-blank character; the others from the
+    /// start of the buffer.
+    private var errorOffset: Int? {
+        guard let position = viewModel.errorPosition else { return nil }
+        guard viewModel.inputLanguage == .sql else { return position }
+        return position + viewModel.text.prefix { $0.isWhitespace }.count
     }
 
     // MARK: Status bar
@@ -97,7 +97,7 @@ struct EditorView: View {
                     .foregroundStyle(.red)
             }
             Spacer()
-            Text("\(lineCount) lines · \(viewModel.sqlText.count) chars")
+            Text("\(lineCount) lines · \(viewModel.text.count) chars")
                 .foregroundStyle(.secondary)
         }
         .font(.caption)
@@ -107,7 +107,7 @@ struct EditorView: View {
     }
 
     private var lineCount: Int {
-        viewModel.sqlText.isEmpty ? 0 : viewModel.sqlText.split(separator: "\n", omittingEmptySubsequences: false).count
+        viewModel.text.isEmpty ? 0 : viewModel.text.split(separator: "\n", omittingEmptySubsequences: false).count
     }
 
     // MARK: Toolbar
@@ -133,7 +133,7 @@ struct EditorView: View {
 
     private var examplesMenu: some View {
         Menu {
-            ForEach(SampleQueries.groups) { group in
+            ForEach(SampleQueries.groups(for: viewModel.inputLanguage)) { group in
                 Menu {
                     Section(group.note) {
                         ForEach(group.queries) { sample in
@@ -152,6 +152,15 @@ struct EditorView: View {
     /// The same buttons whether they sit in the bar or in the overflow menu.
     @ViewBuilder
     private var editorActions: some View {
+        if viewModel.inputLanguage != .sql {
+            Button {
+                viewModel.prettify()
+            } label: {
+                Label("Prettify", systemImage: "wand.and.stars")
+            }
+            .disabled(viewModel.errorMessage != nil || viewModel.isEmpty)
+        }
+
         Button {
             showSchema = true
         } label: {
@@ -172,7 +181,6 @@ struct EditorView: View {
 
         Button(role: .destructive) {
             viewModel.replaceText("")
-            editorFocused = true
         } label: {
             Label("Clear", systemImage: "trash")
         }
@@ -221,5 +229,50 @@ struct EditorView: View {
 #Preview {
     NavigationStack {
         EditorView().environmentObject(AppViewModel())
+    }
+}
+
+/// Glyph keys above the keyboard for typing relational algebra. Every glyph
+/// also has a typed word (`sigma`, `join`, …), so the bar is a shortcut, not a
+/// requirement.
+///
+/// A key inserts at the editor's cursor.
+struct SymbolBar: View {
+    let symbols: [String]
+    /// What a key does. The editor inserts at its cursor directly.
+    var insert: (String) -> Void = { symbol in
+        UIApplication.shared.sendAction(#selector(UIKeyInput.insertText(_:)),
+                                        to: nil, from: symbol, for: nil)
+    }
+
+    static func symbols(for language: InputLanguage) -> [String]? {
+        switch language {
+        case .sql:
+            return nil
+        case .ra:
+            return ["σ", "π", "ρ", "⋈", "×", "∪", "∩", "−", "÷", "γ", "τ", "δ", "⟕", "⟖", "⟗",
+                    "[", "]", "→", "∧", "∨", "¬", "≠", "≤", "≥", "↑", "↓", "←"]
+        case .trc, .drc:
+            return ["{", "}", "|", "∃", "∀", "∧", "∨", "¬", "→", "∈", "⟨", "⟩",
+                    "≠", "≤", "≥", "…", "∪", "∩", "−", "↑", "↓"]
+        }
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(symbols, id: \.self) { symbol in
+                    Button {
+                        insert(symbol)
+                    } label: {
+                        Text(symbol)
+                            .font(.system(.title3, design: .serif))
+                            .frame(minWidth: 30)
+                    }
+                    .accessibilityLabel("Insert \(symbol)")
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 }

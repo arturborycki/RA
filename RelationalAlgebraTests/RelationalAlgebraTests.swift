@@ -289,8 +289,20 @@ final class RelationalAlgebraTests: XCTestCase {
         XCTAssertTrue(formula.contains("LIMIT[10 offset 20]"), formula)
     }
 
+    func testOffsetAfterATableIsNotAnAlias() throws {
+        guard case let .select(stmt) = try SQLParser.parse("SELECT a FROM T OFFSET 5") else {
+            return XCTFail("expected select")
+        }
+        XCTAssertEqual(stmt.from, [.named(name: "T", alias: nil)])
+        XCTAssertEqual(stmt.offset, 5)
+    }
+
     func testNaturalJoinIsABareJoinGlyph() throws {
         let query = try SQLParser.parse("SELECT a FROM R NATURAL JOIN S")
+        // NATURAL must not be swallowed as R's alias.
+        guard case let .select(stmt) = query else { return XCTFail("expected select") }
+        XCTAssertEqual(stmt.from, [.named(name: "R", alias: nil)])
+        XCTAssertEqual(stmt.joins.first?.natural, true)
         let formula = RATranslator().translate(query).finalExpression.formula
         // A join with no subscript is the natural join.
         XCTAssertTrue(formula.contains("⋈"), formula)

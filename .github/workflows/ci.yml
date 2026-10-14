@@ -45,11 +45,35 @@ jobs:
           C="RelationalAlgebra/Calculus"
           P="RelationalAlgebra/Parser"
           T="RelationalAlgebra/Translator"
+          R="RelationalAlgebra/ReverseTranslation"
           probe "models"            $M/*.swift
           probe "models+parser"     $M/*.swift $P/*.swift
           probe "models+calculus"   $M/*.swift $P/*.swift $C/*.swift
           probe "non-view sources"  $M/*.swift $P/*.swift $C/*.swift $T/*.swift
+          probe "+reverse"          $M/*.swift $P/*.swift $C/*.swift $T/*.swift $R/*.swift
           probe "whole app"         $(find RelationalAlgebra -name '*.swift')
+
+  # The SQL the app generates must run on the engines people paste it into.
+  # The Swift tests pin the generated text to Fixtures/ra_to_sql.json; this job
+  # runs that same text on DuckDB and DataFusion and checks the answers. It
+  # needs no Xcode, so it runs on Linux in seconds.
+  engines:
+    name: SQL on DuckDB and DataFusion
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install engines
+        run: pip install duckdb datafusion
+
+      - name: Run the golden SQL
+        run: python3 scripts/check_engines.py
 
   test:
     name: xcodebuild test
@@ -92,6 +116,7 @@ jobs:
             -scheme RelationalAlgebra \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
             CODE_SIGNING_ALLOWED=NO \
+            SWIFT_COMPILATION_MODE=wholemodule \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 120 \
             -maximum-test-execution-time-allowance 300 \
@@ -107,9 +132,11 @@ jobs:
         if: failure()
         run: |
           echo "===== compiler errors and assertion failures ====="
-          grep -E "error:" build.log \
+          # -A: an XCTAssertEqual message spans lines, and the second value —
+          # the one that differs — is on the lines after the first.
+          grep -E -A12 "error:" build.log \
             | grep -v "^ *cd " \
-            | sed 's#/Users/runner/work/RA/RA/##' | head -60 || true
+            | sed 's#/Users/runner/work/RA/RA/##' | head -200 || true
           echo "===== last lines of the log (where a hang would stop) ====="
           tail -30 build.log | sed 's#/Users/runner/work/RA/RA/##' || true
           echo "===== end ====="

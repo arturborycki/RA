@@ -157,6 +157,16 @@ struct Lexer {
         return Token(kind: isKeyword ? .keyword : .identifier, text: text, position: start)
     }
 
+    private static let glyphOperators: [Character: String] = [
+        "≠": "<>", "≤": "<=", "≥": ">=", "−": "-"
+    ]
+
+    /// `→` reads as `AS` because that is what it means in a projection list:
+    /// `π[salary * 12 → annual]` is `SELECT salary * 12 AS annual`.
+    private static let glyphKeywords: [Character: String] = [
+        "∧": "AND", "∨": "OR", "¬": "NOT", "→": "AS", "↑": "ASC", "↓": "DESC"
+    ]
+
     private mutating func scanOperator() throws -> Token {
         let start = index
         let c = scalars[index]
@@ -167,6 +177,18 @@ struct Lexer {
         if c == "<" && next == ">" { index += 2; return Token(kind: .op, text: "<>", position: start) }
         if c == "!" && next == "=" { index += 2; return Token(kind: .op, text: "!=", position: start) }
         if c == "|" && next == "|" { index += 2; return Token(kind: .op, text: "||", position: start) }
+
+        // The glyphs the app itself prints inside σ and ⋈ subscripts. Accepting
+        // them here is what lets a condition copied out of a formula parse back
+        // — and each maps to a single token, so error positions stay exact.
+        if let spelled = Lexer.glyphOperators[c] {
+            index += 1
+            return Token(kind: .op, text: spelled, position: start)
+        }
+        if let word = Lexer.glyphKeywords[c] {
+            index += 1
+            return Token(kind: .keyword, text: word, position: start)
+        }
 
         switch c {
         case "=", "<", ">", "+", "-", "/", "%":

@@ -22,7 +22,10 @@ struct SampleQuery: Identifiable, Hashable {
     /// has a real arity and column order to work from. Declared before `sql`
     /// so the memberwise initialiser reads in the order the editor shows them.
     var schema: String? = nil
+    /// The query text, written in `language` — SQL for most samples, but
+    /// relational algebra for the ones that show translation into SQL.
     let sql: String
+    var language: InputLanguage = .sql
 
     /// What actually goes into the editor.
     var text: String {
@@ -50,6 +53,238 @@ enum SampleQueries {
 
     /// Every bundled query, flattened — what the test suite runs over.
     static let all: [SampleQuery] = groups.flatMap(\.queries)
+
+    /// The examples offered when the editor holds relational algebra.
+    static let raGroups: [SampleGroup] = [raBasics]
+
+    static let trcGroups: [SampleGroup] = [trcBasics]
+    static let drcGroups: [SampleGroup] = [drcBasics]
+
+    static func groups(for language: InputLanguage) -> [SampleGroup] {
+        switch language {
+        case .sql: return groups
+        case .ra:  return raGroups
+        case .trc: return trcGroups
+        case .drc: return drcGroups
+        }
+    }
+
+    // MARK: - Calculus in, SQL out
+
+    static let trcBasics: SampleGroup = SampleGroup(
+        title: "Tuple calculus → SQL",
+        note: "Type a set-builder expression; read the SQL it means.",
+        queries: [
+            SampleQuery(
+                title: "Select + project",
+                schema: companySchema,
+                sql: "{ e.name, e.salary | Employee(e) ∧ e.salary > 50000 }",
+                language: .trc),
+
+            SampleQuery(
+                title: "Typed with words",
+                schema: companySchema,
+                sql: "{ e.name | e in Employee and exists d in Department " +
+                     "( d.id = e.dept_id and d.location = 'Berlin' ) }",
+                language: .trc),
+
+            SampleQuery(
+                title: "∃ becomes EXISTS",
+                schema: companySchema,
+                sql: """
+                { e.name | Employee(e) ∧
+                    ∃d ( Department(d) ∧ d.id = e.dept_id ∧ d.location = 'Berlin' ) }
+                """,
+                language: .trc),
+
+            SampleQuery(
+                title: "¬∃: never enrolled",
+                schema: universitySchema,
+                sql: "{ s.name | Student(s) ∧ ¬∃e ( Enrolled(e) ∧ e.sid = s.sid ) }",
+                language: .trc),
+
+            SampleQuery(
+                title: "∀: enrolled in every course",
+                schema: universitySchema,
+                sql: """
+                { s.name | Student(s) ∧
+                    ∀c ( Course(c) → ∃e ( Enrolled(e) ∧ e.sid = s.sid ∧ e.cid = c.cid ) ) }
+                """,
+                language: .trc),
+
+            SampleQuery(
+                title: "∨ over two relations: UNION",
+                schema: universitySchema + "\n" + companySchema,
+                sql: "{ t.name | (Employee(t) ∧ t.salary > 65000) ∨ Student(t) }",
+                language: .trc),
+
+            SampleQuery(
+                title: "Aggregate: COUNT{ … }",
+                schema: companySchema,
+                sql: """
+                { ⟨d, h⟩ | ∃t ( Employee(t) ∧ t.dept_id = d ) ∧
+                    h = COUNT{ u | Employee(u) ∧ u.dept_id = d } ∧ h > 1 }
+                """,
+                language: .trc),
+
+            SampleQuery(
+                title: "Sort and limit",
+                schema: companySchema,
+                sql: "sort by e.salary ↓, limit 2  applied to { e.name, e.salary | Employee(e) }",
+                language: .trc),
+
+            SampleQuery(
+                title: "Unsafe: no SQL",
+                schema: companySchema,
+                sql: "{ t | ¬Employee(t) }",
+                language: .trc),
+        ])
+
+    static let drcBasics: SampleGroup = SampleGroup(
+        title: "Domain calculus → SQL",
+        note: "Positional atoms need the tables' columns: each sample declares them.",
+        queries: [
+            SampleQuery(
+                title: "Select + project",
+                schema: companySchema,
+                sql: "{ ⟨n, s⟩ | ∃i, d ( Employee(i, n, s, d) ∧ s > 50000 ) }",
+                language: .drc),
+
+            SampleQuery(
+                title: "Join by a shared variable",
+                schema: companySchema,
+                sql: "{ ⟨n⟩ | ∃i, s, d, dn ( Employee(i, n, s, d) ∧ Department(d, dn, 'Berlin') ) }",
+                language: .drc),
+
+            SampleQuery(
+                title: "Unnamed columns: …",
+                schema: companySchema,
+                sql: "{ ⟨n⟩ | ∃i ( Employee(i, n, …) ∧ i < 3 ) }",
+                language: .drc),
+
+            SampleQuery(
+                title: "∀: enrolled in every course",
+                schema: universitySchema,
+                sql: "{ ⟨n⟩ | ∃s ( Student(s, n) ∧ ∀c, t ( Course(c, t) → Enrolled(s, c) ) ) }",
+                language: .drc),
+
+            SampleQuery(
+                title: "Typed with words",
+                schema: companySchema,
+                sql: "{ <n> | EXISTS i, s, d ( Employee(i, n, s, d) AND s > 50000 AND d = 1 ) }",
+                language: .drc),
+
+            SampleQuery(
+                title: "Aggregate: SUM{ … }",
+                schema: companySchema,
+                sql: """
+                { ⟨d, p⟩ | ∃i, n, s ( Employee(i, n, s, d) ) ∧
+                    p = SUM{ s2 | Employee(i2, n2, s2, d2) ∧ d2 = d } }
+                """,
+                language: .drc),
+        ])
+
+    // MARK: - Relational algebra in, SQL out
+
+    static let universitySchema: String = """
+        CREATE TABLE Student (sid INT, name VARCHAR);
+        CREATE TABLE Course (cid INT, title VARCHAR);
+        CREATE TABLE Enrolled (sid INT, cid INT);
+        """
+
+    static let companySchema: String = """
+        CREATE TABLE Employee (id INT, name VARCHAR, salary INT, dept_id INT);
+        CREATE TABLE Department (id INT, name VARCHAR, location VARCHAR);
+        """
+
+    static let raBasics: SampleGroup = SampleGroup(
+        title: "Algebra → SQL",
+        note: "Type relational algebra; read the SQL it means.",
+        queries: [
+            SampleQuery(
+                title: "Select + project",
+                schema: companySchema,
+                sql: "π[name, salary] ( σ[salary > 50000] ( Employee ) )",
+                language: .ra),
+
+            SampleQuery(
+                title: "Typed with words",
+                schema: companySchema,
+                sql: "pi[name] ( sigma[salary > 50000 and dept_id = 1] ( Employee ) )",
+                language: .ra),
+
+            SampleQuery(
+                title: "Theta join with renames",
+                schema: companySchema,
+                sql: """
+                π[e.name, d.name → department] (
+                    ρ[e](Employee) ⋈[e.dept_id = d.id] σ[d.location = 'Berlin'](ρ[d](Department))
+                )
+                """,
+                language: .ra),
+
+            SampleQuery(
+                title: "Product, then select",
+                schema: universitySchema,
+                sql: """
+                π[Student.name] (
+                    σ[Student.sid = Enrolled.sid ∧ Enrolled.cid = 10] ( Student × Enrolled )
+                )
+                """,
+                language: .ra),
+
+            SampleQuery(
+                title: "Natural join",
+                schema: universitySchema,
+                sql: "π[name, title] ( Student ⋈ Enrolled ⋈ Course )",
+                language: .ra),
+
+            SampleQuery(
+                title: "Difference: never enrolled",
+                schema: universitySchema,
+                sql: "π[name] ( Student ⋈ ( π[sid](Student) − π[sid](Enrolled) ) )",
+                language: .ra),
+
+            SampleQuery(
+                title: "Union",
+                schema: companySchema,
+                sql: "π[name](σ[dept_id = 1](Employee)) ∪ π[name](σ[salary > 65000](Employee))",
+                language: .ra),
+
+            SampleQuery(
+                title: "Self-join via ρ",
+                schema: universitySchema,
+                sql: """
+                π[s1, s2] (
+                    σ[s1 < s2] ( ρ[A(s1, c1)](Enrolled) ⋈[c1 = c2] ρ[B(s2, c2)](Enrolled) )
+                )
+                """,
+                language: .ra),
+
+            SampleQuery(
+                title: "Left outer join",
+                schema: companySchema,
+                sql: "π[Employee.name, location] ( Employee ⟕[dept_id = Department.id] Department )",
+                language: .ra),
+
+            SampleQuery(
+                title: "Division: enrolled in every course",
+                schema: universitySchema,
+                sql: "π[name] ( Student ⋈ ( Enrolled ÷ π[cid](Course) ) )",
+                language: .ra),
+
+            SampleQuery(
+                title: "Grouping γ",
+                schema: companySchema,
+                sql: "σ[n > 1] ( γ[dept_id; COUNT(*) → n, AVG(salary) → pay] ( Employee ) )",
+                language: .ra),
+
+            SampleQuery(
+                title: "Sort τ and LIMIT",
+                schema: companySchema,
+                sql: "LIMIT[2] ( τ[salary ↓] ( π[name, salary] ( Employee ) ) )",
+                language: .ra),
+        ])
 
     // MARK: - Basics
 

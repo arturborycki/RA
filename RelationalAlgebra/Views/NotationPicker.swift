@@ -13,6 +13,8 @@
 import SwiftUI
 
 enum Notation: String, CaseIterable, Identifiable {
+    /// Offered only when the input is not SQL — then it is the answer.
+    case sql = "SQL"
     case ra = "RA"
     case trc = "TRC"
     case drc = "DRC"
@@ -24,6 +26,7 @@ enum Notation: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .sql: return "SQL"
         case .ra:  return "Relational Algebra"
         case .trc: return "Tuple Relational Calculus"
         case .drc: return "Domain Relational Calculus"
@@ -38,8 +41,15 @@ enum Notation: String, CaseIterable, Identifiable {
         switch self {
         case .ra:        return ResultTab.allCases
         case .trc, .drc: return [.steps, .formula, .diagram]
+        case .sql:       return [.steps, .formula]
         case .compare:   return []
         }
+    }
+
+    /// The notations worth offering for what the editor holds. Showing SQL as a
+    /// result of SQL input would only repeat the editor.
+    static func options(for input: InputLanguage) -> [Notation] {
+        input == .sql ? allCases.filter { $0 != .sql } : allCases
     }
 
     /// What the third tab is called here.
@@ -53,10 +63,11 @@ enum Notation: String, CaseIterable, Identifiable {
 
 struct NotationPicker: View {
     @Binding var notation: Notation
+    var options: [Notation] = Notation.allCases
 
     var body: some View {
         Picker("Notation", selection: $notation) {
-            ForEach(Notation.allCases) { option in
+            ForEach(options) { option in
                 Text(option.label).tag(option)
             }
         }

@@ -2,8 +2,8 @@
 //  ContentView.swift
 //  RelationalAlgebra
 //
-//  Two-column iPad layout: the SQL editor on the left, the derived relational
-//  algebra (steps / formula / diagram) on the right.
+//  Two-column iPad layout: the editor on the left — SQL or relational algebra —
+//  and every notation derived from it on the right.
 //
 
 import SwiftUI
@@ -46,16 +46,27 @@ struct ContentView: View {
             }
         }
         .preferredColorScheme(appTheme.colorScheme)
+        // Typing algebra is asking for its SQL, so show that first. Switching
+        // back to SQL needs nothing: the SQL notation is simply not offered
+        // there, and the results pane falls back to the algebra.
+        .onChange(of: viewModel.inputLanguage) { _, language in
+            if language != .sql { notation = .sql }
+        }
+    }
+
+    /// The notation actually shown: the stored one when this input offers it.
+    private var shownNotation: Notation {
+        Notation.options(for: viewModel.inputLanguage).contains(notation) ? notation : .ra
     }
 
     private var splitLayout: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             EditorView()
-                .navigationTitle("SQL")
+                .navigationTitle(viewModel.inputLanguage.title)
                 .navigationBarTitleDisplayMode(.inline)
         } detail: {
             ResultsView(notation: $notation, selectedTab: $selectedTab)
-                .navigationTitle(notation.title)
+                .navigationTitle(shownNotation.title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -70,15 +81,15 @@ struct ContentView: View {
         TabView(selection: $phoneTab) {
             NavigationStack {
                 EditorView()
-                    .navigationTitle("SQL")
+                    .navigationTitle(viewModel.inputLanguage.title)
                     .navigationBarTitleDisplayMode(.inline)
             }
-            .tabItem { Label(PhoneTab.sql.label, systemImage: PhoneTab.sql.systemImage) }
+            .tabItem { Label(viewModel.inputLanguage.rawValue, systemImage: PhoneTab.sql.systemImage) }
             .tag(PhoneTab.sql)
 
             NavigationStack {
                 ResultsView(notation: $notation, selectedTab: $selectedTab)
-                    .navigationTitle(notation.title)
+                    .navigationTitle(shownNotation.title)
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
@@ -140,7 +151,18 @@ struct ResultsView: View {
     @Binding var notation: Notation
     @Binding var selectedTab: ResultTab
 
-    private var tabs: [ResultTab] { notation.availableTabs }
+    private var options: [Notation] { Notation.options(for: viewModel.inputLanguage) }
+
+    /// The selected notation, corrected to one this input offers.
+    private var activeNotation: Notation {
+        options.contains(notation) ? notation : .ra
+    }
+
+    private var notationSelection: Binding<Notation> {
+        Binding(get: { activeNotation }, set: { notation = $0 })
+    }
+
+    private var tabs: [ResultTab] { activeNotation.availableTabs }
 
     /// The selected tab, corrected to one this notation can actually show.
     private var activeTab: ResultTab {
@@ -157,12 +179,12 @@ struct ResultsView: View {
         GeometryReader { geo in
             VStack(spacing: 0) {
                 VStack(spacing: 10) {
-                    NotationPicker(notation: $notation)
+                    NotationPicker(notation: notationSelection, options: options)
 
                     if showsViewPicker {
                         Picker("View", selection: $selectedTab) {
                             ForEach(tabs) { tab in
-                                Label(tab == .diagram ? notation.diagramLabel : tab.rawValue,
+                                Label(tab == .diagram ? activeNotation.diagramLabel : tab.rawValue,
                                       systemImage: tab.systemImage).tag(tab)
                             }
                         }
@@ -172,7 +194,10 @@ struct ResultsView: View {
                 .padding()
 
                 if let error = viewModel.errorMessage {
-                    ErrorBanner(message: error)
+                    ErrorBanner(title: viewModel.inputLanguage == .sql
+                                       ? "Could not parse SQL"
+                                       : "Could not read the \(viewModel.inputLanguage.title.lowercased())",
+                                message: error)
                         .padding(.horizontal)
                         .padding(.bottom, 8)
                 }
@@ -189,7 +214,12 @@ struct ResultsView: View {
 
     @ViewBuilder
     private var resultContent: some View {
-        switch notation {
+        switch activeNotation {
+        case .sql:
+            switch activeTab {
+            case .steps: SQLStepsView()
+            default:     SQLResultView()
+            }
         case .ra:
             switch activeTab {
             case .steps:   StepsView()
@@ -200,7 +230,7 @@ struct ResultsView: View {
             CompareView()
 
         case .trc, .drc:
-            if let translation = viewModel.calculus(notation) {
+            if let translation = viewModel.calculus(activeNotation) {
                 switch activeTab {
                 case .steps:   CalculusStepsView(translation: translation)
                 case .diagram: TreeView(root: translation.simplified.scopeTree)
@@ -208,21 +238,22 @@ struct ResultsView: View {
                 }
             } else {
                 EmptyResultView(systemImage: "function",
-                                message: "The \(notation.title.lowercased()) expression appears " +
-                                         "here once the SQL parses.")
+                                message: "The \(activeNotation.title.lowercased()) expression " +
+                                         "appears here once the input parses.")
             }
         }
     }
 }
 
 struct ErrorBanner: View {
+    var title: String = "Could not parse SQL"
     let message: String
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Could not parse SQL").font(.subheadline).bold()
+                Text(title).font(.subheadline).bold()
                 Text(message).font(.footnote).foregroundStyle(.secondary)
             }
             Spacer()

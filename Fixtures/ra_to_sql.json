@@ -1,0 +1,501 @@
+{
+  "_comment": "Relational algebra → SQL golden cases. RelationalAlgebraTests/ReverseTranslationTests.swift checks the app produces exactly `sql` from `ra`; scripts/check_engines.py runs `sql` on DuckDB and DataFusion and checks `answer`.",
+  "database": {
+    "Student": {
+      "columns": [
+        [
+          "sid",
+          "INT"
+        ],
+        [
+          "name",
+          "VARCHAR"
+        ]
+      ],
+      "rows": [
+        [
+          1,
+          "ana"
+        ],
+        [
+          2,
+          "bo"
+        ],
+        [
+          3,
+          "cy"
+        ]
+      ]
+    },
+    "Course": {
+      "columns": [
+        [
+          "cid",
+          "INT"
+        ],
+        [
+          "title",
+          "VARCHAR"
+        ]
+      ],
+      "rows": [
+        [
+          10,
+          "db"
+        ],
+        [
+          20,
+          "os"
+        ]
+      ]
+    },
+    "Enrolled": {
+      "columns": [
+        [
+          "sid",
+          "INT"
+        ],
+        [
+          "cid",
+          "INT"
+        ]
+      ],
+      "rows": [
+        [
+          1,
+          10
+        ],
+        [
+          1,
+          20
+        ],
+        [
+          2,
+          10
+        ]
+      ]
+    },
+    "Employee": {
+      "columns": [
+        [
+          "id",
+          "INT"
+        ],
+        [
+          "name",
+          "VARCHAR"
+        ],
+        [
+          "salary",
+          "INT"
+        ],
+        [
+          "dept_id",
+          "INT"
+        ]
+      ],
+      "rows": [
+        [
+          1,
+          "ana",
+          60000,
+          1
+        ],
+        [
+          2,
+          "bo",
+          40000,
+          1
+        ],
+        [
+          3,
+          "cy",
+          70000,
+          2
+        ],
+        [
+          4,
+          "di",
+          55000,
+          3
+        ]
+      ]
+    },
+    "Department": {
+      "columns": [
+        [
+          "id",
+          "INT"
+        ],
+        [
+          "name",
+          "VARCHAR"
+        ],
+        [
+          "location",
+          "VARCHAR"
+        ]
+      ],
+      "rows": [
+        [
+          1,
+          "R&D",
+          "Berlin"
+        ],
+        [
+          2,
+          "Sales",
+          "Paris"
+        ]
+      ]
+    }
+  },
+  "cases": [
+    {
+      "name": "select-project",
+      "ra": "π[name, salary] ( σ[salary > 50000] ( Employee ) )",
+      "sql": "SELECT DISTINCT name, salary\nFROM Employee\nWHERE salary > 50000;",
+      "answer": [
+        [
+          "ana",
+          60000
+        ],
+        [
+          "cy",
+          70000
+        ],
+        [
+          "di",
+          55000
+        ]
+      ]
+    },
+    {
+      "name": "ascii-aliases",
+      "ra": "pi[name] ( sigma[salary > 50000 and dept_id = 1] ( Employee ) )",
+      "sql": "SELECT DISTINCT name\nFROM Employee\nWHERE salary > 50000\n  AND dept_id = 1;",
+      "answer": [
+        [
+          "ana"
+        ]
+      ]
+    },
+    {
+      "name": "latex-export",
+      "ra": "\\pi_{name}( \\sigma_{salary > 50000}( Employee ) )",
+      "sql": "SELECT DISTINCT name\nFROM Employee\nWHERE salary > 50000;",
+      "answer": [
+        [
+          "ana"
+        ],
+        [
+          "cy"
+        ],
+        [
+          "di"
+        ]
+      ]
+    },
+    {
+      "name": "theta-join-renames",
+      "ra": "π[e.name, d.name → department] ( ρ[e](Employee) ⋈[e.dept_id = d.id] σ[d.location = 'Berlin'](ρ[d](Department)) )",
+      "sql": "SELECT DISTINCT e.name, d.name AS department\nFROM Employee AS e\nJOIN Department AS d ON e.dept_id = d.id\nWHERE d.location = 'Berlin';",
+      "answer": [
+        [
+          "ana",
+          "R&D"
+        ],
+        [
+          "bo",
+          "R&D"
+        ]
+      ]
+    },
+    {
+      "name": "product-then-select",
+      "ra": "π[Student.name] ( σ[Student.sid = Enrolled.sid ∧ Enrolled.cid = 10] ( Student × Enrolled ) )",
+      "sql": "SELECT DISTINCT Student.name\nFROM Student, Enrolled\nWHERE Student.sid = Enrolled.sid\n  AND Enrolled.cid = 10;",
+      "answer": [
+        [
+          "ana"
+        ],
+        [
+          "bo"
+        ]
+      ]
+    },
+    {
+      "name": "natural-join",
+      "ra": "π[name, title] ( Student ⋈ Enrolled ⋈ Course )",
+      "sql": "SELECT DISTINCT name, title\nFROM Student\nNATURAL JOIN Enrolled\nNATURAL JOIN Course;",
+      "answer": [
+        [
+          "ana",
+          "db"
+        ],
+        [
+          "ana",
+          "os"
+        ],
+        [
+          "bo",
+          "db"
+        ]
+      ]
+    },
+    {
+      "name": "difference",
+      "ra": "π[name] ( Student ⋈ ( π[sid](Student) − π[sid](Enrolled) ) )",
+      "sql": "SELECT DISTINCT name\nFROM Student\nNATURAL JOIN (\n  SELECT DISTINCT sid\n  FROM Student\n  EXCEPT\n  SELECT DISTINCT sid\n  FROM Enrolled\n) AS t1;",
+      "answer": [
+        [
+          "cy"
+        ]
+      ]
+    },
+    {
+      "name": "union",
+      "ra": "π[name](σ[dept_id = 1](Employee)) ∪ π[name](σ[salary > 65000](Employee))",
+      "sql": "SELECT DISTINCT name\nFROM Employee\nWHERE dept_id = 1\nUNION\nSELECT DISTINCT name\nFROM Employee\nWHERE salary > 65000;",
+      "answer": [
+        [
+          "ana"
+        ],
+        [
+          "bo"
+        ],
+        [
+          "cy"
+        ]
+      ]
+    },
+    {
+      "name": "nested-set-operations",
+      "ra": "(π[sid](Student) − π[sid](Enrolled)) ∪ (π[sid](Enrolled) ∩ π[sid](Student))",
+      "sql": "(\n  SELECT DISTINCT sid\n  FROM Student\n  EXCEPT\n  SELECT DISTINCT sid\n  FROM Enrolled\n)\nUNION\n(\n  SELECT DISTINCT sid\n  FROM Enrolled\n  INTERSECT\n  SELECT DISTINCT sid\n  FROM Student\n);",
+      "answer": [
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ]
+      ]
+    },
+    {
+      "name": "self-join-rename-attributes",
+      "ra": "π[s1, s2] ( σ[s1 < s2] ( ρ[A(s1, c1)](Enrolled) ⋈[c1 = c2] ρ[B(s2, c2)](Enrolled) ) )",
+      "sql": "WITH A(s1, c1) AS (\n  SELECT *\n  FROM Enrolled\n),\nB(s2, c2) AS (\n  SELECT *\n  FROM Enrolled\n)\nSELECT DISTINCT s1, s2\nFROM A\nJOIN B ON c1 = c2\nWHERE s1 < s2;",
+      "answer": [
+        [
+          1,
+          2
+        ]
+      ]
+    },
+    {
+      "name": "left-outer-join",
+      "ra": "π[Employee.name, location] ( Employee ⟕[dept_id = Department.id] Department )",
+      "sql": "SELECT DISTINCT Employee.name, location\nFROM Employee\nLEFT JOIN Department ON dept_id = Department.id;",
+      "answer": [
+        [
+          "ana",
+          "Berlin"
+        ],
+        [
+          "bo",
+          "Berlin"
+        ],
+        [
+          "cy",
+          "Paris"
+        ],
+        [
+          "di",
+          null
+        ]
+      ]
+    },
+    {
+      "name": "right-join-keeps-filter-below",
+      "ra": "π[salary, location] ( σ[salary > 50000](Employee) ⟖[dept_id = Department.id] Department )",
+      "sql": "SELECT DISTINCT salary, location\nFROM (\n  SELECT *\n  FROM Employee\n  WHERE salary > 50000\n) AS t1\nRIGHT JOIN Department ON dept_id = Department.id;",
+      "answer": [
+        [
+          60000,
+          "Berlin"
+        ],
+        [
+          70000,
+          "Paris"
+        ]
+      ]
+    },
+    {
+      "name": "product-then-outer-join",
+      "ra": "π[name, title, Enrolled.cid] ( (Student × Course) ⟕[Student.sid = Enrolled.sid ∧ Course.cid = Enrolled.cid] Enrolled )",
+      "sql": "SELECT DISTINCT name, title, Enrolled.cid\nFROM Student\nCROSS JOIN Course\nLEFT JOIN Enrolled ON Student.sid = Enrolled.sid AND Course.cid = Enrolled.cid;",
+      "answer": [
+        [
+          "ana",
+          "db",
+          10
+        ],
+        [
+          "ana",
+          "os",
+          20
+        ],
+        [
+          "bo",
+          "db",
+          10
+        ],
+        [
+          "bo",
+          "os",
+          null
+        ],
+        [
+          "cy",
+          "db",
+          null
+        ],
+        [
+          "cy",
+          "os",
+          null
+        ]
+      ]
+    },
+    {
+      "name": "selection-above-projection",
+      "ra": "σ[e.salary > 50000] ( π[e.name, e.salary] ( ρ[e](Employee) ) )",
+      "sql": "SELECT *\nFROM (\n  SELECT DISTINCT e.name, e.salary\n  FROM Employee AS e\n) AS t1\nWHERE salary > 50000;",
+      "answer": [
+        [
+          "ana",
+          60000
+        ],
+        [
+          "cy",
+          70000
+        ],
+        [
+          "di",
+          55000
+        ]
+      ]
+    },
+    {
+      "name": "delta",
+      "ra": "δ ( σ[cid = 10](Enrolled) )",
+      "sql": "SELECT DISTINCT *\nFROM Enrolled\nWHERE cid = 10;",
+      "answer": [
+        [
+          1,
+          10
+        ],
+        [
+          2,
+          10
+        ]
+      ]
+    },
+    {
+      "name": "derivation-read-once-is-inlined",
+      "ra": "R₁ = σ[salary > 50000](Employee)\nR₂ = π[R₁.name, location](R₁ ⋈[dept_id = Department.id] Department)",
+      "sql": "SELECT DISTINCT Employee.name, location\nFROM Employee\nJOIN Department ON dept_id = Department.id\nWHERE salary > 50000;",
+      "answer": [
+        [
+          "ana",
+          "Berlin"
+        ],
+        [
+          "cy",
+          "Paris"
+        ]
+      ]
+    },
+    {
+      "name": "name-read-twice-becomes-cte",
+      "ra": "E := π[sid, cid](Enrolled);\nπ[A.sid](σ[A.sid = B.sid ∧ A.cid < B.cid](ρ[A](E) × ρ[B](E)))",
+      "sql": "WITH E AS (\n  SELECT DISTINCT sid, cid\n  FROM Enrolled\n)\nSELECT DISTINCT A.sid\nFROM E AS A, E AS B\nWHERE A.sid = B.sid\n  AND A.cid < B.cid;",
+      "answer": [
+        [
+          1
+        ]
+      ]
+    },
+    {
+      "name": "derived-table-keeps-the-name",
+      "ra": "S ← π[sid](Student) − π[sid](Enrolled)\nπ[name](σ[Student.sid = S.sid](Student × S))",
+      "sql": "SELECT DISTINCT name\nFROM Student, (\n  SELECT DISTINCT sid\n  FROM Student\n  EXCEPT\n  SELECT DISTINCT sid\n  FROM Enrolled\n) AS S\nWHERE Student.sid = S.sid;",
+      "answer": [
+        [
+          "cy"
+        ]
+      ]
+    },
+    {
+      "name": "grouping",
+      "ra": "γ[dept_id; COUNT(*) → n](Employee)",
+      "sql": "SELECT dept_id, COUNT(*) AS n\nFROM Employee\nGROUP BY dept_id;",
+      "answer": [
+        [
+          1,
+          2
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          3,
+          1
+        ]
+      ]
+    },
+    {
+      "name": "selection-above-grouping",
+      "ra": "σ[n > 1](γ[dept_id; COUNT(*) → n, AVG(salary) → pay](Employee))",
+      "sql": "SELECT *\nFROM (\n  SELECT dept_id, COUNT(*) AS n, AVG(salary) AS pay\n  FROM Employee\n  GROUP BY dept_id\n) AS t1\nWHERE n > 1;",
+      "answer": [
+        [
+          1,
+          2,
+          50000.0
+        ]
+      ]
+    },
+    {
+      "name": "sort-then-limit",
+      "ra": "LIMIT[2] ( τ[salary ↓] ( π[name, salary](Employee) ) )",
+      "sql": "SELECT DISTINCT name, salary\nFROM Employee\nORDER BY salary DESC\nLIMIT 2;",
+      "answer": [
+        [
+          "cy",
+          70000
+        ],
+        [
+          "ana",
+          60000
+        ]
+      ]
+    },
+    {
+      "name": "division",
+      "ra": "Enrolled ÷ π[cid](Course)",
+      "sql": "SELECT DISTINCT t1.sid\nFROM Enrolled AS t1\nWHERE NOT EXISTS (SELECT * FROM (SELECT DISTINCT cid FROM Course) AS t2 WHERE NOT EXISTS (SELECT * FROM Enrolled AS t3 WHERE t3.sid = t1.sid AND t3.cid = t2.cid));",
+      "sql_datafusion": "SELECT DISTINCT sid\nFROM Enrolled\nEXCEPT\nSELECT sid\nFROM (\n  SELECT t1.sid, t2.cid\n  FROM (\n    SELECT DISTINCT sid\n    FROM Enrolled\n  ) AS t1, (\n    SELECT DISTINCT cid\n    FROM Course\n  ) AS t2\n  EXCEPT\n  SELECT sid, cid\n  FROM Enrolled\n) AS t3;",
+      "answer": [
+        [
+          1
+        ]
+      ]
+    }
+  ]
+}
